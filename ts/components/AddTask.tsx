@@ -20,6 +20,11 @@ interface IProps {
     deadline: Date;
 }
 
+interface ILocalState {
+    taskName: string;
+    deadline: Date;
+}
+
 //#region styled
 const Container = Styled.div`
     align-items: center;
@@ -53,22 +58,31 @@ const AddButton = Styled.button`
 `;
 //#endregion
 
-export class AddTask extends React.Component<IProps, {}> {
+export class AddTask extends React.Component<IProps, ILocalState> {
+
+    public constructor(props: IProps) {
+        super(props);
+        this.state = {
+            deadline: props.deadline,
+            taskName: props.taskName,
+        };
+    }
+
     public render() {
-        const date = new Date(this.props.deadline);
+        const date = new Date(this.state.deadline);
         const taskNameId = UUID();
         const deadlineId = UUID();
         return (
             <Container>
                 <TaskNameBox>
                     <label htmlFor={taskNameId}>task name</label>
-                    <TextBox id={taskNameId} type="text" value={this.props.taskName}
-                        onChange={() => {/* ここは後で */ }} />
+                    <TextBox id={taskNameId} type="text" value={this.state.taskName}
+                        onChange={this.onChangeTaskName} />
                 </TaskNameBox>
                 <DeadlineBox>
                     <label htmlFor={deadlineId}>dead line</label>
                     <DatePicker selected={date} showTimeSelect={true}
-                        dateFormat="YYYY-MM-DD HH:mm" onChange={() => {/* ここは後で */ }} />
+                        dateFormat="YYYY-MM-DD HH:mm" onChange={this.onChangeDeadLine} />
                 </DeadlineBox>
                 <AddButton onClick={this.onClickAdd}>+</AddButton>
             </Container>
@@ -79,11 +93,23 @@ export class AddTask extends React.Component<IProps, {}> {
      * 追加ボタンを押すと、タスク一覧にタスクを追加する
      */
     private onClickAdd = (e: React.MouseEvent) => {
-        store.dispatch(createAddTaskAction(this.props.taskName, this.props.deadline));
+        store.dispatch(createAddTaskAction(this.state.taskName, this.state.deadline));
         const m = Moment(new Date()).add(1, 'days');
         this.setState({
             deadline: m.toDate(),
             taskName: '',
+        });
+    }
+
+    private onChangeTaskName = (e: React.ChangeEvent<HTMLInputElement>) => {
+        this.setState({
+            taskName: e.target.value,
+        });
+    }
+
+    private onChangeDeadLine = (date: Date| null) => {
+        this.setState({
+            deadline: !!date ? date : new Date(),
         });
     }
 }
