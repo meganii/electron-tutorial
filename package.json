@@ -6,7 +6,10 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "webpack",
-    "start": "electron ./"
+    "start": "electron ./",
+    "package:mac": "webpack && electron-builder --mac --x64",
+    "package:windows": "webpack && electron-builder --win --x64",
+    "package:linux": "webpack && electron-builder --linux --x64"
   },
   "repository": "git+ssh://git@github.com/meganii/electron-tutorial.git",
   "author": "meganii <yuhei24@gmail.com>",
@@ -41,6 +44,7 @@
     "@types/uuid": "^3.4.4",
     "css-loader": "^2.1.0",
     "electron": "^4.0.5",
+    "electron-builder": "^20.38.5",
     "style-loader": "^0.23.1",
     "ts-loader": "^5.3.3",
     "tslint": "^5.12.1",
@@ -48,5 +52,40 @@
     "typescript": "^3.3.3333",
     "webpack": "^4.29.5",
     "webpack-cli": "^3.2.3"
+  },
+  "build": {
+    "productName": "TODO",
+    "appId": "com.meganii.todo",
+    "directories": {
+      "output": "./product"
+    },
+    "files": [
+      "./dist/**/*.js",
+      "./index.html",
+      "./main.js"
+    ],
+    "dmg": {
+      "contents": [
+        {
+          "x": 410,
+          "y": 150,
+          "type": "link",
+          "path": "/Applications"
+        },
+        {
+          "x": 130,
+          "y": 150,
+          "type": "file"
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    },
+    "win": {
+      "target": "msi"
+    }
   }
 }
