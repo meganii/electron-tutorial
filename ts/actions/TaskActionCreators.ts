@@ -11,7 +11,7 @@ import {
     TOGGLE_COMPLETE_TASK,
 } from './TaskActions';
 
-export const createShowTaskAction = (tasks: ITask[]): IShowTaskAction => {
+export const createShowTasksAction = (tasks: ITask[]): IShowTaskAction => {
     const dummyTasks: ITask[] = [
         {
             complete: false,
