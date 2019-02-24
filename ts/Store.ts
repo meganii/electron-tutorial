@@ -1,15 +1,15 @@
 import {combineReducers, createStore} from 'redux';
-import {UserReducer} from './reducers/UserReducer';
-import IUser from './states/IUser';
+
+import {TaskReducer} from './reducers/TaskReducer';
+import {ITaskList} from './states/ITask';
 
 export interface IState {
-    User: IUser;
+    taskList: ITaskList;
 }
 
 const combineReducer = combineReducers<IState>({
-    User: UserReducer,
+    taskList: TaskReducer,
 });
 
-export const store = createStore(combineReducer);
-
+const store = createStore(combineReducer);
 export default store;
