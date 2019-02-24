@@ -8,10 +8,12 @@ export interface ITask {
 }
 
 export interface ITaskList {
+    shownLoading: boolean;
     tasks: ITask[];
 }
 
 export const initTaskList: ITaskList = {
+    shownLoading: false,
     tasks: [],
 };
 

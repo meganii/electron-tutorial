@@ -107,11 +107,11 @@ class TaskRow extends React.Component<ITask, {}> {
     }
 
     private onClickBox = (id: string, e: React.MouseEvent) => {
-        store.dispatch(createToggleCompleteAction(id));
+        store.dispatch(createToggleCompleteAction(id, store));
     }
 
     private onClickDelete = (id: string, e: React.MouseEvent) => {
-        store.dispatch(createDeleteTaskAction(id));
+        store.dispatch(createDeleteTaskAction(id, store));
         e.stopPropagation();
     }
 }

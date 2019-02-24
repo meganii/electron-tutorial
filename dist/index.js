@@ -1207,6 +1207,2994 @@ module.exports = warning;
 
 /***/ }),
 
+/***/ "./node_modules/fs-extra/lib/copy-sync/copy-sync.js":
+/*!**********************************************************!*\
+  !*** ./node_modules/fs-extra/lib/copy-sync/copy-sync.js ***!
+  \**********************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const path = __webpack_require__(/*! path */ "path")
+const mkdirpSync = __webpack_require__(/*! ../mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js").mkdirsSync
+const utimesSync = __webpack_require__(/*! ../util/utimes.js */ "./node_modules/fs-extra/lib/util/utimes.js").utimesMillisSync
+
+const notExist = Symbol('notExist')
+
+function copySync (src, dest, opts) {
+  if (typeof opts === 'function') {
+    opts = {filter: opts}
+  }
+
+  opts = opts || {}
+  opts.clobber = 'clobber' in opts ? !!opts.clobber : true // default to true for now
+  opts.overwrite = 'overwrite' in opts ? !!opts.overwrite : opts.clobber // overwrite falls back to clobber
+
+  // Warn about using preserveTimestamps on 32-bit node
+  if (opts.preserveTimestamps && process.arch === 'ia32') {
+    console.warn(`fs-extra: Using the preserveTimestamps option in 32-bit node is not recommended;\n
+    see https://github.com/jprichardson/node-fs-extra/issues/269`)
+  }
+
+  const destStat = checkPaths(src, dest)
+
+  if (opts.filter && !opts.filter(src, dest)) return
+
+  const destParent = path.dirname(dest)
+  if (!fs.existsSync(destParent)) mkdirpSync(destParent)
+  return startCopy(destStat, src, dest, opts)
+}
+
+function startCopy (destStat, src, dest, opts) {
+  if (opts.filter && !opts.filter(src, dest)) return
+  return getStats(destStat, src, dest, opts)
+}
+
+function getStats (destStat, src, dest, opts) {
+  const statSync = opts.dereference ? fs.statSync : fs.lstatSync
+  const srcStat = statSync(src)
+
+  if (srcStat.isDirectory()) return onDir(srcStat, destStat, src, dest, opts)
+  else if (srcStat.isFile() ||
+           srcStat.isCharacterDevice() ||
+           srcStat.isBlockDevice()) return onFile(srcStat, destStat, src, dest, opts)
+  else if (srcStat.isSymbolicLink()) return onLink(destStat, src, dest, opts)
+}
+
+function onFile (srcStat, destStat, src, dest, opts) {
+  if (destStat === notExist) return copyFile(srcStat, src, dest, opts)
+  return mayCopyFile(srcStat, src, dest, opts)
+}
+
+function mayCopyFile (srcStat, src, dest, opts) {
+  if (opts.overwrite) {
+    fs.unlinkSync(dest)
+    return copyFile(srcStat, src, dest, opts)
+  } else if (opts.errorOnExist) {
+    throw new Error(`'${dest}' already exists`)
+  }
+}
+
+function copyFile (srcStat, src, dest, opts) {
+  if (typeof fs.copyFileSync === 'function') {
+    fs.copyFileSync(src, dest)
+    fs.chmodSync(dest, srcStat.mode)
+    if (opts.preserveTimestamps) {
+      return utimesSync(dest, srcStat.atime, srcStat.mtime)
+    }
+    return
+  }
+  return copyFileFallback(srcStat, src, dest, opts)
+}
+
+function copyFileFallback (srcStat, src, dest, opts) {
+  const BUF_LENGTH = 64 * 1024
+  const _buff = __webpack_require__(/*! ../util/buffer */ "./node_modules/fs-extra/lib/util/buffer.js")(BUF_LENGTH)
+
+  const fdr = fs.openSync(src, 'r')
+  const fdw = fs.openSync(dest, 'w', srcStat.mode)
+  let pos = 0
+
+  while (pos < srcStat.size) {
+    const bytesRead = fs.readSync(fdr, _buff, 0, BUF_LENGTH, pos)
+    fs.writeSync(fdw, _buff, 0, bytesRead)
+    pos += bytesRead
+  }
+
+  if (opts.preserveTimestamps) fs.futimesSync(fdw, srcStat.atime, srcStat.mtime)
+
+  fs.closeSync(fdr)
+  fs.closeSync(fdw)
+}
+
+function onDir (srcStat, destStat, src, dest, opts) {
+  if (destStat === notExist) return mkDirAndCopy(srcStat, src, dest, opts)
+  if (destStat && !destStat.isDirectory()) {
+    throw new Error(`Cannot overwrite non-directory '${dest}' with directory '${src}'.`)
+  }
+  return copyDir(src, dest, opts)
+}
+
+function mkDirAndCopy (srcStat, src, dest, opts) {
+  fs.mkdirSync(dest)
+  copyDir(src, dest, opts)
+  return fs.chmodSync(dest, srcStat.mode)
+}
+
+function copyDir (src, dest, opts) {
+  fs.readdirSync(src).forEach(item => copyDirItem(item, src, dest, opts))
+}
+
+function copyDirItem (item, src, dest, opts) {
+  const srcItem = path.join(src, item)
+  const destItem = path.join(dest, item)
+  const destStat = checkPaths(srcItem, destItem)
+  return startCopy(destStat, srcItem, destItem, opts)
+}
+
+function onLink (destStat, src, dest, opts) {
+  let resolvedSrc = fs.readlinkSync(src)
+
+  if (opts.dereference) {
+    resolvedSrc = path.resolve(process.cwd(), resolvedSrc)
+  }
+
+  if (destStat === notExist) {
+    return fs.symlinkSync(resolvedSrc, dest)
+  } else {
+    let resolvedDest
+    try {
+      resolvedDest = fs.readlinkSync(dest)
+    } catch (err) {
+      // dest exists and is a regular file or directory,
+      // Windows may throw UNKNOWN error. If dest already exists,
+      // fs throws error anyway, so no need to guard against it here.
+      if (err.code === 'EINVAL' || err.code === 'UNKNOWN') return fs.symlinkSync(resolvedSrc, dest)
+      throw err
+    }
+    if (opts.dereference) {
+      resolvedDest = path.resolve(process.cwd(), resolvedDest)
+    }
+    if (isSrcSubdir(resolvedSrc, resolvedDest)) {
+      throw new Error(`Cannot copy '${resolvedSrc}' to a subdirectory of itself, '${resolvedDest}'.`)
+    }
+
+    // prevent copy if src is a subdir of dest since unlinking
+    // dest in this case would result in removing src contents
+    // and therefore a broken symlink would be created.
+    if (fs.statSync(dest).isDirectory() && isSrcSubdir(resolvedDest, resolvedSrc)) {
+      throw new Error(`Cannot overwrite '${resolvedDest}' with '${resolvedSrc}'.`)
+    }
+    return copyLink(resolvedSrc, dest)
+  }
+}
+
+function copyLink (resolvedSrc, dest) {
+  fs.unlinkSync(dest)
+  return fs.symlinkSync(resolvedSrc, dest)
+}
+
+// return true if dest is a subdir of src, otherwise false.
+function isSrcSubdir (src, dest) {
+  const srcArray = path.resolve(src).split(path.sep)
+  const destArray = path.resolve(dest).split(path.sep)
+  return srcArray.reduce((acc, current, i) => acc && destArray[i] === current, true)
+}
+
+function checkStats (src, dest) {
+  const srcStat = fs.statSync(src)
+  let destStat
+  try {
+    destStat = fs.statSync(dest)
+  } catch (err) {
+    if (err.code === 'ENOENT') return {srcStat, destStat: notExist}
+    throw err
+  }
+  return {srcStat, destStat}
+}
+
+function checkPaths (src, dest) {
+  const {srcStat, destStat} = checkStats(src, dest)
+  if (destStat.ino && destStat.ino === srcStat.ino) {
+    throw new Error('Source and destination must not be the same.')
+  }
+  if (srcStat.isDirectory() && isSrcSubdir(src, dest)) {
+    throw new Error(`Cannot copy '${src}' to a subdirectory of itself, '${dest}'.`)
+  }
+  return destStat
+}
+
+module.exports = copySync
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/copy-sync/index.js":
+/*!******************************************************!*\
+  !*** ./node_modules/fs-extra/lib/copy-sync/index.js ***!
+  \******************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+module.exports = {
+  copySync: __webpack_require__(/*! ./copy-sync */ "./node_modules/fs-extra/lib/copy-sync/copy-sync.js")
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/copy/copy.js":
+/*!************************************************!*\
+  !*** ./node_modules/fs-extra/lib/copy/copy.js ***!
+  \************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const path = __webpack_require__(/*! path */ "path")
+const mkdirp = __webpack_require__(/*! ../mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js").mkdirs
+const pathExists = __webpack_require__(/*! ../path-exists */ "./node_modules/fs-extra/lib/path-exists/index.js").pathExists
+const utimes = __webpack_require__(/*! ../util/utimes */ "./node_modules/fs-extra/lib/util/utimes.js").utimesMillis
+
+const notExist = Symbol('notExist')
+
+function copy (src, dest, opts, cb) {
+  if (typeof opts === 'function' && !cb) {
+    cb = opts
+    opts = {}
+  } else if (typeof opts === 'function') {
+    opts = {filter: opts}
+  }
+
+  cb = cb || function () {}
+  opts = opts || {}
+
+  opts.clobber = 'clobber' in opts ? !!opts.clobber : true // default to true for now
+  opts.overwrite = 'overwrite' in opts ? !!opts.overwrite : opts.clobber // overwrite falls back to clobber
+
+  // Warn about using preserveTimestamps on 32-bit node
+  if (opts.preserveTimestamps && process.arch === 'ia32') {
+    console.warn(`fs-extra: Using the preserveTimestamps option in 32-bit node is not recommended;\n
+    see https://github.com/jprichardson/node-fs-extra/issues/269`)
+  }
+
+  checkPaths(src, dest, (err, destStat) => {
+    if (err) return cb(err)
+    if (opts.filter) return handleFilter(checkParentDir, destStat, src, dest, opts, cb)
+    return checkParentDir(destStat, src, dest, opts, cb)
+  })
+}
+
+function checkParentDir (destStat, src, dest, opts, cb) {
+  const destParent = path.dirname(dest)
+  pathExists(destParent, (err, dirExists) => {
+    if (err) return cb(err)
+    if (dirExists) return startCopy(destStat, src, dest, opts, cb)
+    mkdirp(destParent, err => {
+      if (err) return cb(err)
+      return startCopy(destStat, src, dest, opts, cb)
+    })
+  })
+}
+
+function handleFilter (onInclude, destStat, src, dest, opts, cb) {
+  Promise.resolve(opts.filter(src, dest)).then(include => {
+    if (include) {
+      if (destStat) return onInclude(destStat, src, dest, opts, cb)
+      return onInclude(src, dest, opts, cb)
+    }
+    return cb()
+  }, error => cb(error))
+}
+
+function startCopy (destStat, src, dest, opts, cb) {
+  if (opts.filter) return handleFilter(getStats, destStat, src, dest, opts, cb)
+  return getStats(destStat, src, dest, opts, cb)
+}
+
+function getStats (destStat, src, dest, opts, cb) {
+  const stat = opts.dereference ? fs.stat : fs.lstat
+  stat(src, (err, srcStat) => {
+    if (err) return cb(err)
+
+    if (srcStat.isDirectory()) return onDir(srcStat, destStat, src, dest, opts, cb)
+    else if (srcStat.isFile() ||
+             srcStat.isCharacterDevice() ||
+             srcStat.isBlockDevice()) return onFile(srcStat, destStat, src, dest, opts, cb)
+    else if (srcStat.isSymbolicLink()) return onLink(destStat, src, dest, opts, cb)
+  })
+}
+
+function onFile (srcStat, destStat, src, dest, opts, cb) {
+  if (destStat === notExist) return copyFile(srcStat, src, dest, opts, cb)
+  return mayCopyFile(srcStat, src, dest, opts, cb)
+}
+
+function mayCopyFile (srcStat, src, dest, opts, cb) {
+  if (opts.overwrite) {
+    fs.unlink(dest, err => {
+      if (err) return cb(err)
+      return copyFile(srcStat, src, dest, opts, cb)
+    })
+  } else if (opts.errorOnExist) {
+    return cb(new Error(`'${dest}' already exists`))
+  } else return cb()
+}
+
+function copyFile (srcStat, src, dest, opts, cb) {
+  if (typeof fs.copyFile === 'function') {
+    return fs.copyFile(src, dest, err => {
+      if (err) return cb(err)
+      return setDestModeAndTimestamps(srcStat, dest, opts, cb)
+    })
+  }
+  return copyFileFallback(srcStat, src, dest, opts, cb)
+}
+
+function copyFileFallback (srcStat, src, dest, opts, cb) {
+  const rs = fs.createReadStream(src)
+  rs.on('error', err => cb(err)).once('open', () => {
+    const ws = fs.createWriteStream(dest, { mode: srcStat.mode })
+    ws.on('error', err => cb(err))
+      .on('open', () => rs.pipe(ws))
+      .once('close', () => setDestModeAndTimestamps(srcStat, dest, opts, cb))
+  })
+}
+
+function setDestModeAndTimestamps (srcStat, dest, opts, cb) {
+  fs.chmod(dest, srcStat.mode, err => {
+    if (err) return cb(err)
+    if (opts.preserveTimestamps) {
+      return utimes(dest, srcStat.atime, srcStat.mtime, cb)
+    }
+    return cb()
+  })
+}
+
+function onDir (srcStat, destStat, src, dest, opts, cb) {
+  if (destStat === notExist) return mkDirAndCopy(srcStat, src, dest, opts, cb)
+  if (destStat && !destStat.isDirectory()) {
+    return cb(new Error(`Cannot overwrite non-directory '${dest}' with directory '${src}'.`))
+  }
+  return copyDir(src, dest, opts, cb)
+}
+
+function mkDirAndCopy (srcStat, src, dest, opts, cb) {
+  fs.mkdir(dest, err => {
+    if (err) return cb(err)
+    copyDir(src, dest, opts, err => {
+      if (err) return cb(err)
+      return fs.chmod(dest, srcStat.mode, cb)
+    })
+  })
+}
+
+function copyDir (src, dest, opts, cb) {
+  fs.readdir(src, (err, items) => {
+    if (err) return cb(err)
+    return copyDirItems(items, src, dest, opts, cb)
+  })
+}
+
+function copyDirItems (items, src, dest, opts, cb) {
+  const item = items.pop()
+  if (!item) return cb()
+  return copyDirItem(items, item, src, dest, opts, cb)
+}
+
+function copyDirItem (items, item, src, dest, opts, cb) {
+  const srcItem = path.join(src, item)
+  const destItem = path.join(dest, item)
+  checkPaths(srcItem, destItem, (err, destStat) => {
+    if (err) return cb(err)
+    startCopy(destStat, srcItem, destItem, opts, err => {
+      if (err) return cb(err)
+      return copyDirItems(items, src, dest, opts, cb)
+    })
+  })
+}
+
+function onLink (destStat, src, dest, opts, cb) {
+  fs.readlink(src, (err, resolvedSrc) => {
+    if (err) return cb(err)
+
+    if (opts.dereference) {
+      resolvedSrc = path.resolve(process.cwd(), resolvedSrc)
+    }
+
+    if (destStat === notExist) {
+      return fs.symlink(resolvedSrc, dest, cb)
+    } else {
+      fs.readlink(dest, (err, resolvedDest) => {
+        if (err) {
+          // dest exists and is a regular file or directory,
+          // Windows may throw UNKNOWN error. If dest already exists,
+          // fs throws error anyway, so no need to guard against it here.
+          if (err.code === 'EINVAL' || err.code === 'UNKNOWN') return fs.symlink(resolvedSrc, dest, cb)
+          return cb(err)
+        }
+        if (opts.dereference) {
+          resolvedDest = path.resolve(process.cwd(), resolvedDest)
+        }
+        if (isSrcSubdir(resolvedSrc, resolvedDest)) {
+          return cb(new Error(`Cannot copy '${resolvedSrc}' to a subdirectory of itself, '${resolvedDest}'.`))
+        }
+
+        // do not copy if src is a subdir of dest since unlinking
+        // dest in this case would result in removing src contents
+        // and therefore a broken symlink would be created.
+        if (destStat.isDirectory() && isSrcSubdir(resolvedDest, resolvedSrc)) {
+          return cb(new Error(`Cannot overwrite '${resolvedDest}' with '${resolvedSrc}'.`))
+        }
+        return copyLink(resolvedSrc, dest, cb)
+      })
+    }
+  })
+}
+
+function copyLink (resolvedSrc, dest, cb) {
+  fs.unlink(dest, err => {
+    if (err) return cb(err)
+    return fs.symlink(resolvedSrc, dest, cb)
+  })
+}
+
+// return true if dest is a subdir of src, otherwise false.
+function isSrcSubdir (src, dest) {
+  const srcArray = path.resolve(src).split(path.sep)
+  const destArray = path.resolve(dest).split(path.sep)
+  return srcArray.reduce((acc, current, i) => acc && destArray[i] === current, true)
+}
+
+function checkStats (src, dest, cb) {
+  fs.stat(src, (err, srcStat) => {
+    if (err) return cb(err)
+    fs.stat(dest, (err, destStat) => {
+      if (err) {
+        if (err.code === 'ENOENT') return cb(null, {srcStat, destStat: notExist})
+        return cb(err)
+      }
+      return cb(null, {srcStat, destStat})
+    })
+  })
+}
+
+function checkPaths (src, dest, cb) {
+  checkStats(src, dest, (err, stats) => {
+    if (err) return cb(err)
+    const {srcStat, destStat} = stats
+    if (destStat.ino && destStat.ino === srcStat.ino) {
+      return cb(new Error('Source and destination must not be the same.'))
+    }
+    if (srcStat.isDirectory() && isSrcSubdir(src, dest)) {
+      return cb(new Error(`Cannot copy '${src}' to a subdirectory of itself, '${dest}'.`))
+    }
+    return cb(null, destStat)
+  })
+}
+
+module.exports = copy
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/copy/index.js":
+/*!*************************************************!*\
+  !*** ./node_modules/fs-extra/lib/copy/index.js ***!
+  \*************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+module.exports = {
+  copy: u(__webpack_require__(/*! ./copy */ "./node_modules/fs-extra/lib/copy/copy.js"))
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/empty/index.js":
+/*!**************************************************!*\
+  !*** ./node_modules/fs-extra/lib/empty/index.js ***!
+  \**************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+const fs = __webpack_require__(/*! fs */ "fs")
+const path = __webpack_require__(/*! path */ "path")
+const mkdir = __webpack_require__(/*! ../mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js")
+const remove = __webpack_require__(/*! ../remove */ "./node_modules/fs-extra/lib/remove/index.js")
+
+const emptyDir = u(function emptyDir (dir, callback) {
+  callback = callback || function () {}
+  fs.readdir(dir, (err, items) => {
+    if (err) return mkdir.mkdirs(dir, callback)
+
+    items = items.map(item => path.join(dir, item))
+
+    deleteItem()
+
+    function deleteItem () {
+      const item = items.pop()
+      if (!item) return callback()
+      remove.remove(item, err => {
+        if (err) return callback(err)
+        deleteItem()
+      })
+    }
+  })
+})
+
+function emptyDirSync (dir) {
+  let items
+  try {
+    items = fs.readdirSync(dir)
+  } catch (err) {
+    return mkdir.mkdirsSync(dir)
+  }
+
+  items.forEach(item => {
+    item = path.join(dir, item)
+    remove.removeSync(item)
+  })
+}
+
+module.exports = {
+  emptyDirSync,
+  emptydirSync: emptyDirSync,
+  emptyDir,
+  emptydir: emptyDir
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/ensure/file.js":
+/*!**************************************************!*\
+  !*** ./node_modules/fs-extra/lib/ensure/file.js ***!
+  \**************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+const path = __webpack_require__(/*! path */ "path")
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const mkdir = __webpack_require__(/*! ../mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js")
+const pathExists = __webpack_require__(/*! ../path-exists */ "./node_modules/fs-extra/lib/path-exists/index.js").pathExists
+
+function createFile (file, callback) {
+  function makeFile () {
+    fs.writeFile(file, '', err => {
+      if (err) return callback(err)
+      callback()
+    })
+  }
+
+  fs.stat(file, (err, stats) => { // eslint-disable-line handle-callback-err
+    if (!err && stats.isFile()) return callback()
+    const dir = path.dirname(file)
+    pathExists(dir, (err, dirExists) => {
+      if (err) return callback(err)
+      if (dirExists) return makeFile()
+      mkdir.mkdirs(dir, err => {
+        if (err) return callback(err)
+        makeFile()
+      })
+    })
+  })
+}
+
+function createFileSync (file) {
+  let stats
+  try {
+    stats = fs.statSync(file)
+  } catch (e) {}
+  if (stats && stats.isFile()) return
+
+  const dir = path.dirname(file)
+  if (!fs.existsSync(dir)) {
+    mkdir.mkdirsSync(dir)
+  }
+
+  fs.writeFileSync(file, '')
+}
+
+module.exports = {
+  createFile: u(createFile),
+  createFileSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/ensure/index.js":
+/*!***************************************************!*\
+  !*** ./node_modules/fs-extra/lib/ensure/index.js ***!
+  \***************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const file = __webpack_require__(/*! ./file */ "./node_modules/fs-extra/lib/ensure/file.js")
+const link = __webpack_require__(/*! ./link */ "./node_modules/fs-extra/lib/ensure/link.js")
+const symlink = __webpack_require__(/*! ./symlink */ "./node_modules/fs-extra/lib/ensure/symlink.js")
+
+module.exports = {
+  // file
+  createFile: file.createFile,
+  createFileSync: file.createFileSync,
+  ensureFile: file.createFile,
+  ensureFileSync: file.createFileSync,
+  // link
+  createLink: link.createLink,
+  createLinkSync: link.createLinkSync,
+  ensureLink: link.createLink,
+  ensureLinkSync: link.createLinkSync,
+  // symlink
+  createSymlink: symlink.createSymlink,
+  createSymlinkSync: symlink.createSymlinkSync,
+  ensureSymlink: symlink.createSymlink,
+  ensureSymlinkSync: symlink.createSymlinkSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/ensure/link.js":
+/*!**************************************************!*\
+  !*** ./node_modules/fs-extra/lib/ensure/link.js ***!
+  \**************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+const path = __webpack_require__(/*! path */ "path")
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const mkdir = __webpack_require__(/*! ../mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js")
+const pathExists = __webpack_require__(/*! ../path-exists */ "./node_modules/fs-extra/lib/path-exists/index.js").pathExists
+
+function createLink (srcpath, dstpath, callback) {
+  function makeLink (srcpath, dstpath) {
+    fs.link(srcpath, dstpath, err => {
+      if (err) return callback(err)
+      callback(null)
+    })
+  }
+
+  pathExists(dstpath, (err, destinationExists) => {
+    if (err) return callback(err)
+    if (destinationExists) return callback(null)
+    fs.lstat(srcpath, (err) => {
+      if (err) {
+        err.message = err.message.replace('lstat', 'ensureLink')
+        return callback(err)
+      }
+
+      const dir = path.dirname(dstpath)
+      pathExists(dir, (err, dirExists) => {
+        if (err) return callback(err)
+        if (dirExists) return makeLink(srcpath, dstpath)
+        mkdir.mkdirs(dir, err => {
+          if (err) return callback(err)
+          makeLink(srcpath, dstpath)
+        })
+      })
+    })
+  })
+}
+
+function createLinkSync (srcpath, dstpath) {
+  const destinationExists = fs.existsSync(dstpath)
+  if (destinationExists) return undefined
+
+  try {
+    fs.lstatSync(srcpath)
+  } catch (err) {
+    err.message = err.message.replace('lstat', 'ensureLink')
+    throw err
+  }
+
+  const dir = path.dirname(dstpath)
+  const dirExists = fs.existsSync(dir)
+  if (dirExists) return fs.linkSync(srcpath, dstpath)
+  mkdir.mkdirsSync(dir)
+
+  return fs.linkSync(srcpath, dstpath)
+}
+
+module.exports = {
+  createLink: u(createLink),
+  createLinkSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/ensure/symlink-paths.js":
+/*!***********************************************************!*\
+  !*** ./node_modules/fs-extra/lib/ensure/symlink-paths.js ***!
+  \***********************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const path = __webpack_require__(/*! path */ "path")
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const pathExists = __webpack_require__(/*! ../path-exists */ "./node_modules/fs-extra/lib/path-exists/index.js").pathExists
+
+/**
+ * Function that returns two types of paths, one relative to symlink, and one
+ * relative to the current working directory. Checks if path is absolute or
+ * relative. If the path is relative, this function checks if the path is
+ * relative to symlink or relative to current working directory. This is an
+ * initiative to find a smarter `srcpath` to supply when building symlinks.
+ * This allows you to determine which path to use out of one of three possible
+ * types of source paths. The first is an absolute path. This is detected by
+ * `path.isAbsolute()`. When an absolute path is provided, it is checked to
+ * see if it exists. If it does it's used, if not an error is returned
+ * (callback)/ thrown (sync). The other two options for `srcpath` are a
+ * relative url. By default Node's `fs.symlink` works by creating a symlink
+ * using `dstpath` and expects the `srcpath` to be relative to the newly
+ * created symlink. If you provide a `srcpath` that does not exist on the file
+ * system it results in a broken symlink. To minimize this, the function
+ * checks to see if the 'relative to symlink' source file exists, and if it
+ * does it will use it. If it does not, it checks if there's a file that
+ * exists that is relative to the current working directory, if does its used.
+ * This preserves the expectations of the original fs.symlink spec and adds
+ * the ability to pass in `relative to current working direcotry` paths.
+ */
+
+function symlinkPaths (srcpath, dstpath, callback) {
+  if (path.isAbsolute(srcpath)) {
+    return fs.lstat(srcpath, (err) => {
+      if (err) {
+        err.message = err.message.replace('lstat', 'ensureSymlink')
+        return callback(err)
+      }
+      return callback(null, {
+        'toCwd': srcpath,
+        'toDst': srcpath
+      })
+    })
+  } else {
+    const dstdir = path.dirname(dstpath)
+    const relativeToDst = path.join(dstdir, srcpath)
+    return pathExists(relativeToDst, (err, exists) => {
+      if (err) return callback(err)
+      if (exists) {
+        return callback(null, {
+          'toCwd': relativeToDst,
+          'toDst': srcpath
+        })
+      } else {
+        return fs.lstat(srcpath, (err) => {
+          if (err) {
+            err.message = err.message.replace('lstat', 'ensureSymlink')
+            return callback(err)
+          }
+          return callback(null, {
+            'toCwd': srcpath,
+            'toDst': path.relative(dstdir, srcpath)
+          })
+        })
+      }
+    })
+  }
+}
+
+function symlinkPathsSync (srcpath, dstpath) {
+  let exists
+  if (path.isAbsolute(srcpath)) {
+    exists = fs.existsSync(srcpath)
+    if (!exists) throw new Error('absolute srcpath does not exist')
+    return {
+      'toCwd': srcpath,
+      'toDst': srcpath
+    }
+  } else {
+    const dstdir = path.dirname(dstpath)
+    const relativeToDst = path.join(dstdir, srcpath)
+    exists = fs.existsSync(relativeToDst)
+    if (exists) {
+      return {
+        'toCwd': relativeToDst,
+        'toDst': srcpath
+      }
+    } else {
+      exists = fs.existsSync(srcpath)
+      if (!exists) throw new Error('relative srcpath does not exist')
+      return {
+        'toCwd': srcpath,
+        'toDst': path.relative(dstdir, srcpath)
+      }
+    }
+  }
+}
+
+module.exports = {
+  symlinkPaths,
+  symlinkPathsSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/ensure/symlink-type.js":
+/*!**********************************************************!*\
+  !*** ./node_modules/fs-extra/lib/ensure/symlink-type.js ***!
+  \**********************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+
+function symlinkType (srcpath, type, callback) {
+  callback = (typeof type === 'function') ? type : callback
+  type = (typeof type === 'function') ? false : type
+  if (type) return callback(null, type)
+  fs.lstat(srcpath, (err, stats) => {
+    if (err) return callback(null, 'file')
+    type = (stats && stats.isDirectory()) ? 'dir' : 'file'
+    callback(null, type)
+  })
+}
+
+function symlinkTypeSync (srcpath, type) {
+  let stats
+
+  if (type) return type
+  try {
+    stats = fs.lstatSync(srcpath)
+  } catch (e) {
+    return 'file'
+  }
+  return (stats && stats.isDirectory()) ? 'dir' : 'file'
+}
+
+module.exports = {
+  symlinkType,
+  symlinkTypeSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/ensure/symlink.js":
+/*!*****************************************************!*\
+  !*** ./node_modules/fs-extra/lib/ensure/symlink.js ***!
+  \*****************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+const path = __webpack_require__(/*! path */ "path")
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const _mkdirs = __webpack_require__(/*! ../mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js")
+const mkdirs = _mkdirs.mkdirs
+const mkdirsSync = _mkdirs.mkdirsSync
+
+const _symlinkPaths = __webpack_require__(/*! ./symlink-paths */ "./node_modules/fs-extra/lib/ensure/symlink-paths.js")
+const symlinkPaths = _symlinkPaths.symlinkPaths
+const symlinkPathsSync = _symlinkPaths.symlinkPathsSync
+
+const _symlinkType = __webpack_require__(/*! ./symlink-type */ "./node_modules/fs-extra/lib/ensure/symlink-type.js")
+const symlinkType = _symlinkType.symlinkType
+const symlinkTypeSync = _symlinkType.symlinkTypeSync
+
+const pathExists = __webpack_require__(/*! ../path-exists */ "./node_modules/fs-extra/lib/path-exists/index.js").pathExists
+
+function createSymlink (srcpath, dstpath, type, callback) {
+  callback = (typeof type === 'function') ? type : callback
+  type = (typeof type === 'function') ? false : type
+
+  pathExists(dstpath, (err, destinationExists) => {
+    if (err) return callback(err)
+    if (destinationExists) return callback(null)
+    symlinkPaths(srcpath, dstpath, (err, relative) => {
+      if (err) return callback(err)
+      srcpath = relative.toDst
+      symlinkType(relative.toCwd, type, (err, type) => {
+        if (err) return callback(err)
+        const dir = path.dirname(dstpath)
+        pathExists(dir, (err, dirExists) => {
+          if (err) return callback(err)
+          if (dirExists) return fs.symlink(srcpath, dstpath, type, callback)
+          mkdirs(dir, err => {
+            if (err) return callback(err)
+            fs.symlink(srcpath, dstpath, type, callback)
+          })
+        })
+      })
+    })
+  })
+}
+
+function createSymlinkSync (srcpath, dstpath, type) {
+  const destinationExists = fs.existsSync(dstpath)
+  if (destinationExists) return undefined
+
+  const relative = symlinkPathsSync(srcpath, dstpath)
+  srcpath = relative.toDst
+  type = symlinkTypeSync(relative.toCwd, type)
+  const dir = path.dirname(dstpath)
+  const exists = fs.existsSync(dir)
+  if (exists) return fs.symlinkSync(srcpath, dstpath, type)
+  mkdirsSync(dir)
+  return fs.symlinkSync(srcpath, dstpath, type)
+}
+
+module.exports = {
+  createSymlink: u(createSymlink),
+  createSymlinkSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/fs/index.js":
+/*!***********************************************!*\
+  !*** ./node_modules/fs-extra/lib/fs/index.js ***!
+  \***********************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+// This is adapted from https://github.com/normalize/mz
+// Copyright (c) 2014-2016 Jonathan Ong me@jongleberry.com and Contributors
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+
+const api = [
+  'access',
+  'appendFile',
+  'chmod',
+  'chown',
+  'close',
+  'copyFile',
+  'fchmod',
+  'fchown',
+  'fdatasync',
+  'fstat',
+  'fsync',
+  'ftruncate',
+  'futimes',
+  'lchown',
+  'lchmod',
+  'link',
+  'lstat',
+  'mkdir',
+  'mkdtemp',
+  'open',
+  'readFile',
+  'readdir',
+  'readlink',
+  'realpath',
+  'rename',
+  'rmdir',
+  'stat',
+  'symlink',
+  'truncate',
+  'unlink',
+  'utimes',
+  'writeFile'
+].filter(key => {
+  // Some commands are not available on some systems. Ex:
+  // fs.copyFile was added in Node.js v8.5.0
+  // fs.mkdtemp was added in Node.js v5.10.0
+  // fs.lchown is not available on at least some Linux
+  return typeof fs[key] === 'function'
+})
+
+// Export all keys:
+Object.keys(fs).forEach(key => {
+  if (key === 'promises') {
+    // fs.promises is a getter property that triggers ExperimentalWarning
+    // Don't re-export it here, the getter is defined in "lib/index.js"
+    return
+  }
+  exports[key] = fs[key]
+})
+
+// Universalify async methods:
+api.forEach(method => {
+  exports[method] = u(fs[method])
+})
+
+// We differ from mz/fs in that we still ship the old, broken, fs.exists()
+// since we are a drop-in replacement for the native module
+exports.exists = function (filename, callback) {
+  if (typeof callback === 'function') {
+    return fs.exists(filename, callback)
+  }
+  return new Promise(resolve => {
+    return fs.exists(filename, resolve)
+  })
+}
+
+// fs.read() & fs.write need special treatment due to multiple callback args
+
+exports.read = function (fd, buffer, offset, length, position, callback) {
+  if (typeof callback === 'function') {
+    return fs.read(fd, buffer, offset, length, position, callback)
+  }
+  return new Promise((resolve, reject) => {
+    fs.read(fd, buffer, offset, length, position, (err, bytesRead, buffer) => {
+      if (err) return reject(err)
+      resolve({ bytesRead, buffer })
+    })
+  })
+}
+
+// Function signature can be
+// fs.write(fd, buffer[, offset[, length[, position]]], callback)
+// OR
+// fs.write(fd, string[, position[, encoding]], callback)
+// We need to handle both cases, so we use ...args
+exports.write = function (fd, buffer, ...args) {
+  if (typeof args[args.length - 1] === 'function') {
+    return fs.write(fd, buffer, ...args)
+  }
+
+  return new Promise((resolve, reject) => {
+    fs.write(fd, buffer, ...args, (err, bytesWritten, buffer) => {
+      if (err) return reject(err)
+      resolve({ bytesWritten, buffer })
+    })
+  })
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/index.js":
+/*!********************************************!*\
+  !*** ./node_modules/fs-extra/lib/index.js ***!
+  \********************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+module.exports = Object.assign(
+  {},
+  // Export promiseified graceful-fs:
+  __webpack_require__(/*! ./fs */ "./node_modules/fs-extra/lib/fs/index.js"),
+  // Export extra methods:
+  __webpack_require__(/*! ./copy-sync */ "./node_modules/fs-extra/lib/copy-sync/index.js"),
+  __webpack_require__(/*! ./copy */ "./node_modules/fs-extra/lib/copy/index.js"),
+  __webpack_require__(/*! ./empty */ "./node_modules/fs-extra/lib/empty/index.js"),
+  __webpack_require__(/*! ./ensure */ "./node_modules/fs-extra/lib/ensure/index.js"),
+  __webpack_require__(/*! ./json */ "./node_modules/fs-extra/lib/json/index.js"),
+  __webpack_require__(/*! ./mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js"),
+  __webpack_require__(/*! ./move-sync */ "./node_modules/fs-extra/lib/move-sync/index.js"),
+  __webpack_require__(/*! ./move */ "./node_modules/fs-extra/lib/move/index.js"),
+  __webpack_require__(/*! ./output */ "./node_modules/fs-extra/lib/output/index.js"),
+  __webpack_require__(/*! ./path-exists */ "./node_modules/fs-extra/lib/path-exists/index.js"),
+  __webpack_require__(/*! ./remove */ "./node_modules/fs-extra/lib/remove/index.js")
+)
+
+// Export fs.promises as a getter property so that we don't trigger
+// ExperimentalWarning before fs.promises is actually accessed.
+const fs = __webpack_require__(/*! fs */ "fs")
+if (Object.getOwnPropertyDescriptor(fs, 'promises')) {
+  Object.defineProperty(module.exports, 'promises', {
+    get () { return fs.promises }
+  })
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/json/index.js":
+/*!*************************************************!*\
+  !*** ./node_modules/fs-extra/lib/json/index.js ***!
+  \*************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+const jsonFile = __webpack_require__(/*! ./jsonfile */ "./node_modules/fs-extra/lib/json/jsonfile.js")
+
+jsonFile.outputJson = u(__webpack_require__(/*! ./output-json */ "./node_modules/fs-extra/lib/json/output-json.js"))
+jsonFile.outputJsonSync = __webpack_require__(/*! ./output-json-sync */ "./node_modules/fs-extra/lib/json/output-json-sync.js")
+// aliases
+jsonFile.outputJSON = jsonFile.outputJson
+jsonFile.outputJSONSync = jsonFile.outputJsonSync
+jsonFile.writeJSON = jsonFile.writeJson
+jsonFile.writeJSONSync = jsonFile.writeJsonSync
+jsonFile.readJSON = jsonFile.readJson
+jsonFile.readJSONSync = jsonFile.readJsonSync
+
+module.exports = jsonFile
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/json/jsonfile.js":
+/*!****************************************************!*\
+  !*** ./node_modules/fs-extra/lib/json/jsonfile.js ***!
+  \****************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+const jsonFile = __webpack_require__(/*! jsonfile */ "./node_modules/jsonfile/index.js")
+
+module.exports = {
+  // jsonfile exports
+  readJson: u(jsonFile.readFile),
+  readJsonSync: jsonFile.readFileSync,
+  writeJson: u(jsonFile.writeFile),
+  writeJsonSync: jsonFile.writeFileSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/json/output-json-sync.js":
+/*!************************************************************!*\
+  !*** ./node_modules/fs-extra/lib/json/output-json-sync.js ***!
+  \************************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const path = __webpack_require__(/*! path */ "path")
+const mkdir = __webpack_require__(/*! ../mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js")
+const jsonFile = __webpack_require__(/*! ./jsonfile */ "./node_modules/fs-extra/lib/json/jsonfile.js")
+
+function outputJsonSync (file, data, options) {
+  const dir = path.dirname(file)
+
+  if (!fs.existsSync(dir)) {
+    mkdir.mkdirsSync(dir)
+  }
+
+  jsonFile.writeJsonSync(file, data, options)
+}
+
+module.exports = outputJsonSync
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/json/output-json.js":
+/*!*******************************************************!*\
+  !*** ./node_modules/fs-extra/lib/json/output-json.js ***!
+  \*******************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const path = __webpack_require__(/*! path */ "path")
+const mkdir = __webpack_require__(/*! ../mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js")
+const pathExists = __webpack_require__(/*! ../path-exists */ "./node_modules/fs-extra/lib/path-exists/index.js").pathExists
+const jsonFile = __webpack_require__(/*! ./jsonfile */ "./node_modules/fs-extra/lib/json/jsonfile.js")
+
+function outputJson (file, data, options, callback) {
+  if (typeof options === 'function') {
+    callback = options
+    options = {}
+  }
+
+  const dir = path.dirname(file)
+
+  pathExists(dir, (err, itDoes) => {
+    if (err) return callback(err)
+    if (itDoes) return jsonFile.writeJson(file, data, options, callback)
+
+    mkdir.mkdirs(dir, err => {
+      if (err) return callback(err)
+      jsonFile.writeJson(file, data, options, callback)
+    })
+  })
+}
+
+module.exports = outputJson
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/mkdirs/index.js":
+/*!***************************************************!*\
+  !*** ./node_modules/fs-extra/lib/mkdirs/index.js ***!
+  \***************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+const mkdirs = u(__webpack_require__(/*! ./mkdirs */ "./node_modules/fs-extra/lib/mkdirs/mkdirs.js"))
+const mkdirsSync = __webpack_require__(/*! ./mkdirs-sync */ "./node_modules/fs-extra/lib/mkdirs/mkdirs-sync.js")
+
+module.exports = {
+  mkdirs,
+  mkdirsSync,
+  // alias
+  mkdirp: mkdirs,
+  mkdirpSync: mkdirsSync,
+  ensureDir: mkdirs,
+  ensureDirSync: mkdirsSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/mkdirs/mkdirs-sync.js":
+/*!*********************************************************!*\
+  !*** ./node_modules/fs-extra/lib/mkdirs/mkdirs-sync.js ***!
+  \*********************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const path = __webpack_require__(/*! path */ "path")
+const invalidWin32Path = __webpack_require__(/*! ./win32 */ "./node_modules/fs-extra/lib/mkdirs/win32.js").invalidWin32Path
+
+const o777 = parseInt('0777', 8)
+
+function mkdirsSync (p, opts, made) {
+  if (!opts || typeof opts !== 'object') {
+    opts = { mode: opts }
+  }
+
+  let mode = opts.mode
+  const xfs = opts.fs || fs
+
+  if (process.platform === 'win32' && invalidWin32Path(p)) {
+    const errInval = new Error(p + ' contains invalid WIN32 path characters.')
+    errInval.code = 'EINVAL'
+    throw errInval
+  }
+
+  if (mode === undefined) {
+    mode = o777 & (~process.umask())
+  }
+  if (!made) made = null
+
+  p = path.resolve(p)
+
+  try {
+    xfs.mkdirSync(p, mode)
+    made = made || p
+  } catch (err0) {
+    if (err0.code === 'ENOENT') {
+      if (path.dirname(p) === p) throw err0
+      made = mkdirsSync(path.dirname(p), opts, made)
+      mkdirsSync(p, opts, made)
+    } else {
+      // In the case of any other error, just see if there's a dir there
+      // already. If so, then hooray!  If not, then something is borked.
+      let stat
+      try {
+        stat = xfs.statSync(p)
+      } catch (err1) {
+        throw err0
+      }
+      if (!stat.isDirectory()) throw err0
+    }
+  }
+
+  return made
+}
+
+module.exports = mkdirsSync
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/mkdirs/mkdirs.js":
+/*!****************************************************!*\
+  !*** ./node_modules/fs-extra/lib/mkdirs/mkdirs.js ***!
+  \****************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const path = __webpack_require__(/*! path */ "path")
+const invalidWin32Path = __webpack_require__(/*! ./win32 */ "./node_modules/fs-extra/lib/mkdirs/win32.js").invalidWin32Path
+
+const o777 = parseInt('0777', 8)
+
+function mkdirs (p, opts, callback, made) {
+  if (typeof opts === 'function') {
+    callback = opts
+    opts = {}
+  } else if (!opts || typeof opts !== 'object') {
+    opts = { mode: opts }
+  }
+
+  if (process.platform === 'win32' && invalidWin32Path(p)) {
+    const errInval = new Error(p + ' contains invalid WIN32 path characters.')
+    errInval.code = 'EINVAL'
+    return callback(errInval)
+  }
+
+  let mode = opts.mode
+  const xfs = opts.fs || fs
+
+  if (mode === undefined) {
+    mode = o777 & (~process.umask())
+  }
+  if (!made) made = null
+
+  callback = callback || function () {}
+  p = path.resolve(p)
+
+  xfs.mkdir(p, mode, er => {
+    if (!er) {
+      made = made || p
+      return callback(null, made)
+    }
+    switch (er.code) {
+      case 'ENOENT':
+        if (path.dirname(p) === p) return callback(er)
+        mkdirs(path.dirname(p), opts, (er, made) => {
+          if (er) callback(er, made)
+          else mkdirs(p, opts, callback, made)
+        })
+        break
+
+      // In the case of any other error, just see if there's a dir
+      // there already.  If so, then hooray!  If not, then something
+      // is borked.
+      default:
+        xfs.stat(p, (er2, stat) => {
+          // if the stat fails, then that's super weird.
+          // let the original error be the failure reason.
+          if (er2 || !stat.isDirectory()) callback(er, made)
+          else callback(null, made)
+        })
+        break
+    }
+  })
+}
+
+module.exports = mkdirs
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/mkdirs/win32.js":
+/*!***************************************************!*\
+  !*** ./node_modules/fs-extra/lib/mkdirs/win32.js ***!
+  \***************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const path = __webpack_require__(/*! path */ "path")
+
+// get drive on windows
+function getRootPath (p) {
+  p = path.normalize(path.resolve(p)).split(path.sep)
+  if (p.length > 0) return p[0]
+  return null
+}
+
+// http://stackoverflow.com/a/62888/10333 contains more accurate
+// TODO: expand to include the rest
+const INVALID_PATH_CHARS = /[<>:"|?*]/
+
+function invalidWin32Path (p) {
+  const rp = getRootPath(p)
+  p = p.replace(rp, '')
+  return INVALID_PATH_CHARS.test(p)
+}
+
+module.exports = {
+  getRootPath,
+  invalidWin32Path
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/move-sync/index.js":
+/*!******************************************************!*\
+  !*** ./node_modules/fs-extra/lib/move-sync/index.js ***!
+  \******************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const path = __webpack_require__(/*! path */ "path")
+const copySync = __webpack_require__(/*! ../copy-sync */ "./node_modules/fs-extra/lib/copy-sync/index.js").copySync
+const removeSync = __webpack_require__(/*! ../remove */ "./node_modules/fs-extra/lib/remove/index.js").removeSync
+const mkdirpSync = __webpack_require__(/*! ../mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js").mkdirsSync
+const buffer = __webpack_require__(/*! ../util/buffer */ "./node_modules/fs-extra/lib/util/buffer.js")
+
+function moveSync (src, dest, options) {
+  options = options || {}
+  const overwrite = options.overwrite || options.clobber || false
+
+  src = path.resolve(src)
+  dest = path.resolve(dest)
+
+  if (src === dest) return fs.accessSync(src)
+
+  if (isSrcSubdir(src, dest)) throw new Error(`Cannot move '${src}' into itself '${dest}'.`)
+
+  mkdirpSync(path.dirname(dest))
+  tryRenameSync()
+
+  function tryRenameSync () {
+    if (overwrite) {
+      try {
+        return fs.renameSync(src, dest)
+      } catch (err) {
+        if (err.code === 'ENOTEMPTY' || err.code === 'EEXIST' || err.code === 'EPERM') {
+          removeSync(dest)
+          options.overwrite = false // just overwriteed it, no need to do it again
+          return moveSync(src, dest, options)
+        }
+
+        if (err.code !== 'EXDEV') throw err
+        return moveSyncAcrossDevice(src, dest, overwrite)
+      }
+    } else {
+      try {
+        fs.linkSync(src, dest)
+        return fs.unlinkSync(src)
+      } catch (err) {
+        if (err.code === 'EXDEV' || err.code === 'EISDIR' || err.code === 'EPERM' || err.code === 'ENOTSUP') {
+          return moveSyncAcrossDevice(src, dest, overwrite)
+        }
+        throw err
+      }
+    }
+  }
+}
+
+function moveSyncAcrossDevice (src, dest, overwrite) {
+  const stat = fs.statSync(src)
+
+  if (stat.isDirectory()) {
+    return moveDirSyncAcrossDevice(src, dest, overwrite)
+  } else {
+    return moveFileSyncAcrossDevice(src, dest, overwrite)
+  }
+}
+
+function moveFileSyncAcrossDevice (src, dest, overwrite) {
+  const BUF_LENGTH = 64 * 1024
+  const _buff = buffer(BUF_LENGTH)
+
+  const flags = overwrite ? 'w' : 'wx'
+
+  const fdr = fs.openSync(src, 'r')
+  const stat = fs.fstatSync(fdr)
+  const fdw = fs.openSync(dest, flags, stat.mode)
+  let pos = 0
+
+  while (pos < stat.size) {
+    const bytesRead = fs.readSync(fdr, _buff, 0, BUF_LENGTH, pos)
+    fs.writeSync(fdw, _buff, 0, bytesRead)
+    pos += bytesRead
+  }
+
+  fs.closeSync(fdr)
+  fs.closeSync(fdw)
+  return fs.unlinkSync(src)
+}
+
+function moveDirSyncAcrossDevice (src, dest, overwrite) {
+  const options = {
+    overwrite: false
+  }
+
+  if (overwrite) {
+    removeSync(dest)
+    tryCopySync()
+  } else {
+    tryCopySync()
+  }
+
+  function tryCopySync () {
+    copySync(src, dest, options)
+    return removeSync(src)
+  }
+}
+
+// return true if dest is a subdir of src, otherwise false.
+// extract dest base dir and check if that is the same as src basename
+function isSrcSubdir (src, dest) {
+  try {
+    return fs.statSync(src).isDirectory() &&
+           src !== dest &&
+           dest.indexOf(src) > -1 &&
+           dest.split(path.dirname(src) + path.sep)[1].split(path.sep)[0] === path.basename(src)
+  } catch (e) {
+    return false
+  }
+}
+
+module.exports = {
+  moveSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/move/index.js":
+/*!*************************************************!*\
+  !*** ./node_modules/fs-extra/lib/move/index.js ***!
+  \*************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const path = __webpack_require__(/*! path */ "path")
+const copy = __webpack_require__(/*! ../copy */ "./node_modules/fs-extra/lib/copy/index.js").copy
+const remove = __webpack_require__(/*! ../remove */ "./node_modules/fs-extra/lib/remove/index.js").remove
+const mkdirp = __webpack_require__(/*! ../mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js").mkdirp
+const pathExists = __webpack_require__(/*! ../path-exists */ "./node_modules/fs-extra/lib/path-exists/index.js").pathExists
+
+function move (src, dest, opts, cb) {
+  if (typeof opts === 'function') {
+    cb = opts
+    opts = {}
+  }
+
+  const overwrite = opts.overwrite || opts.clobber || false
+
+  src = path.resolve(src)
+  dest = path.resolve(dest)
+
+  if (src === dest) return fs.access(src, cb)
+
+  fs.stat(src, (err, st) => {
+    if (err) return cb(err)
+
+    if (st.isDirectory() && isSrcSubdir(src, dest)) {
+      return cb(new Error(`Cannot move '${src}' to a subdirectory of itself, '${dest}'.`))
+    }
+    mkdirp(path.dirname(dest), err => {
+      if (err) return cb(err)
+      return doRename(src, dest, overwrite, cb)
+    })
+  })
+}
+
+function doRename (src, dest, overwrite, cb) {
+  if (overwrite) {
+    return remove(dest, err => {
+      if (err) return cb(err)
+      return rename(src, dest, overwrite, cb)
+    })
+  }
+  pathExists(dest, (err, destExists) => {
+    if (err) return cb(err)
+    if (destExists) return cb(new Error('dest already exists.'))
+    return rename(src, dest, overwrite, cb)
+  })
+}
+
+function rename (src, dest, overwrite, cb) {
+  fs.rename(src, dest, err => {
+    if (!err) return cb()
+    if (err.code !== 'EXDEV') return cb(err)
+    return moveAcrossDevice(src, dest, overwrite, cb)
+  })
+}
+
+function moveAcrossDevice (src, dest, overwrite, cb) {
+  const opts = {
+    overwrite,
+    errorOnExist: true
+  }
+
+  copy(src, dest, opts, err => {
+    if (err) return cb(err)
+    return remove(src, cb)
+  })
+}
+
+function isSrcSubdir (src, dest) {
+  const srcArray = src.split(path.sep)
+  const destArray = dest.split(path.sep)
+
+  return srcArray.reduce((acc, current, i) => {
+    return acc && destArray[i] === current
+  }, true)
+}
+
+module.exports = {
+  move: u(move)
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/output/index.js":
+/*!***************************************************!*\
+  !*** ./node_modules/fs-extra/lib/output/index.js ***!
+  \***************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const path = __webpack_require__(/*! path */ "path")
+const mkdir = __webpack_require__(/*! ../mkdirs */ "./node_modules/fs-extra/lib/mkdirs/index.js")
+const pathExists = __webpack_require__(/*! ../path-exists */ "./node_modules/fs-extra/lib/path-exists/index.js").pathExists
+
+function outputFile (file, data, encoding, callback) {
+  if (typeof encoding === 'function') {
+    callback = encoding
+    encoding = 'utf8'
+  }
+
+  const dir = path.dirname(file)
+  pathExists(dir, (err, itDoes) => {
+    if (err) return callback(err)
+    if (itDoes) return fs.writeFile(file, data, encoding, callback)
+
+    mkdir.mkdirs(dir, err => {
+      if (err) return callback(err)
+
+      fs.writeFile(file, data, encoding, callback)
+    })
+  })
+}
+
+function outputFileSync (file, ...args) {
+  const dir = path.dirname(file)
+  if (fs.existsSync(dir)) {
+    return fs.writeFileSync(file, ...args)
+  }
+  mkdir.mkdirsSync(dir)
+  fs.writeFileSync(file, ...args)
+}
+
+module.exports = {
+  outputFile: u(outputFile),
+  outputFileSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/path-exists/index.js":
+/*!********************************************************!*\
+  !*** ./node_modules/fs-extra/lib/path-exists/index.js ***!
+  \********************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromPromise
+const fs = __webpack_require__(/*! ../fs */ "./node_modules/fs-extra/lib/fs/index.js")
+
+function pathExists (path) {
+  return fs.access(path).then(() => true).catch(() => false)
+}
+
+module.exports = {
+  pathExists: u(pathExists),
+  pathExistsSync: fs.existsSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/remove/index.js":
+/*!***************************************************!*\
+  !*** ./node_modules/fs-extra/lib/remove/index.js ***!
+  \***************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const u = __webpack_require__(/*! universalify */ "./node_modules/universalify/index.js").fromCallback
+const rimraf = __webpack_require__(/*! ./rimraf */ "./node_modules/fs-extra/lib/remove/rimraf.js")
+
+module.exports = {
+  remove: u(rimraf),
+  removeSync: rimraf.sync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/remove/rimraf.js":
+/*!****************************************************!*\
+  !*** ./node_modules/fs-extra/lib/remove/rimraf.js ***!
+  \****************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const path = __webpack_require__(/*! path */ "path")
+const assert = __webpack_require__(/*! assert */ "assert")
+
+const isWindows = (process.platform === 'win32')
+
+function defaults (options) {
+  const methods = [
+    'unlink',
+    'chmod',
+    'stat',
+    'lstat',
+    'rmdir',
+    'readdir'
+  ]
+  methods.forEach(m => {
+    options[m] = options[m] || fs[m]
+    m = m + 'Sync'
+    options[m] = options[m] || fs[m]
+  })
+
+  options.maxBusyTries = options.maxBusyTries || 3
+}
+
+function rimraf (p, options, cb) {
+  let busyTries = 0
+
+  if (typeof options === 'function') {
+    cb = options
+    options = {}
+  }
+
+  assert(p, 'rimraf: missing path')
+  assert.strictEqual(typeof p, 'string', 'rimraf: path should be a string')
+  assert.strictEqual(typeof cb, 'function', 'rimraf: callback function required')
+  assert(options, 'rimraf: invalid options argument provided')
+  assert.strictEqual(typeof options, 'object', 'rimraf: options should be object')
+
+  defaults(options)
+
+  rimraf_(p, options, function CB (er) {
+    if (er) {
+      if ((er.code === 'EBUSY' || er.code === 'ENOTEMPTY' || er.code === 'EPERM') &&
+          busyTries < options.maxBusyTries) {
+        busyTries++
+        const time = busyTries * 100
+        // try again, with the same exact callback as this one.
+        return setTimeout(() => rimraf_(p, options, CB), time)
+      }
+
+      // already gone
+      if (er.code === 'ENOENT') er = null
+    }
+
+    cb(er)
+  })
+}
+
+// Two possible strategies.
+// 1. Assume it's a file.  unlink it, then do the dir stuff on EPERM or EISDIR
+// 2. Assume it's a directory.  readdir, then do the file stuff on ENOTDIR
+//
+// Both result in an extra syscall when you guess wrong.  However, there
+// are likely far more normal files in the world than directories.  This
+// is based on the assumption that a the average number of files per
+// directory is >= 1.
+//
+// If anyone ever complains about this, then I guess the strategy could
+// be made configurable somehow.  But until then, YAGNI.
+function rimraf_ (p, options, cb) {
+  assert(p)
+  assert(options)
+  assert(typeof cb === 'function')
+
+  // sunos lets the root user unlink directories, which is... weird.
+  // so we have to lstat here and make sure it's not a dir.
+  options.lstat(p, (er, st) => {
+    if (er && er.code === 'ENOENT') {
+      return cb(null)
+    }
+
+    // Windows can EPERM on stat.  Life is suffering.
+    if (er && er.code === 'EPERM' && isWindows) {
+      return fixWinEPERM(p, options, er, cb)
+    }
+
+    if (st && st.isDirectory()) {
+      return rmdir(p, options, er, cb)
+    }
+
+    options.unlink(p, er => {
+      if (er) {
+        if (er.code === 'ENOENT') {
+          return cb(null)
+        }
+        if (er.code === 'EPERM') {
+          return (isWindows)
+            ? fixWinEPERM(p, options, er, cb)
+            : rmdir(p, options, er, cb)
+        }
+        if (er.code === 'EISDIR') {
+          return rmdir(p, options, er, cb)
+        }
+      }
+      return cb(er)
+    })
+  })
+}
+
+function fixWinEPERM (p, options, er, cb) {
+  assert(p)
+  assert(options)
+  assert(typeof cb === 'function')
+  if (er) {
+    assert(er instanceof Error)
+  }
+
+  options.chmod(p, 0o666, er2 => {
+    if (er2) {
+      cb(er2.code === 'ENOENT' ? null : er)
+    } else {
+      options.stat(p, (er3, stats) => {
+        if (er3) {
+          cb(er3.code === 'ENOENT' ? null : er)
+        } else if (stats.isDirectory()) {
+          rmdir(p, options, er, cb)
+        } else {
+          options.unlink(p, cb)
+        }
+      })
+    }
+  })
+}
+
+function fixWinEPERMSync (p, options, er) {
+  let stats
+
+  assert(p)
+  assert(options)
+  if (er) {
+    assert(er instanceof Error)
+  }
+
+  try {
+    options.chmodSync(p, 0o666)
+  } catch (er2) {
+    if (er2.code === 'ENOENT') {
+      return
+    } else {
+      throw er
+    }
+  }
+
+  try {
+    stats = options.statSync(p)
+  } catch (er3) {
+    if (er3.code === 'ENOENT') {
+      return
+    } else {
+      throw er
+    }
+  }
+
+  if (stats.isDirectory()) {
+    rmdirSync(p, options, er)
+  } else {
+    options.unlinkSync(p)
+  }
+}
+
+function rmdir (p, options, originalEr, cb) {
+  assert(p)
+  assert(options)
+  if (originalEr) {
+    assert(originalEr instanceof Error)
+  }
+  assert(typeof cb === 'function')
+
+  // try to rmdir first, and only readdir on ENOTEMPTY or EEXIST (SunOS)
+  // if we guessed wrong, and it's not a directory, then
+  // raise the original error.
+  options.rmdir(p, er => {
+    if (er && (er.code === 'ENOTEMPTY' || er.code === 'EEXIST' || er.code === 'EPERM')) {
+      rmkids(p, options, cb)
+    } else if (er && er.code === 'ENOTDIR') {
+      cb(originalEr)
+    } else {
+      cb(er)
+    }
+  })
+}
+
+function rmkids (p, options, cb) {
+  assert(p)
+  assert(options)
+  assert(typeof cb === 'function')
+
+  options.readdir(p, (er, files) => {
+    if (er) return cb(er)
+
+    let n = files.length
+    let errState
+
+    if (n === 0) return options.rmdir(p, cb)
+
+    files.forEach(f => {
+      rimraf(path.join(p, f), options, er => {
+        if (errState) {
+          return
+        }
+        if (er) return cb(errState = er)
+        if (--n === 0) {
+          options.rmdir(p, cb)
+        }
+      })
+    })
+  })
+}
+
+// this looks simpler, and is strictly *faster*, but will
+// tie up the JavaScript thread and fail on excessively
+// deep directory trees.
+function rimrafSync (p, options) {
+  let st
+
+  options = options || {}
+  defaults(options)
+
+  assert(p, 'rimraf: missing path')
+  assert.strictEqual(typeof p, 'string', 'rimraf: path should be a string')
+  assert(options, 'rimraf: missing options')
+  assert.strictEqual(typeof options, 'object', 'rimraf: options should be object')
+
+  try {
+    st = options.lstatSync(p)
+  } catch (er) {
+    if (er.code === 'ENOENT') {
+      return
+    }
+
+    // Windows can EPERM on stat.  Life is suffering.
+    if (er.code === 'EPERM' && isWindows) {
+      fixWinEPERMSync(p, options, er)
+    }
+  }
+
+  try {
+    // sunos lets the root user unlink directories, which is... weird.
+    if (st && st.isDirectory()) {
+      rmdirSync(p, options, null)
+    } else {
+      options.unlinkSync(p)
+    }
+  } catch (er) {
+    if (er.code === 'ENOENT') {
+      return
+    } else if (er.code === 'EPERM') {
+      return isWindows ? fixWinEPERMSync(p, options, er) : rmdirSync(p, options, er)
+    } else if (er.code !== 'EISDIR') {
+      throw er
+    }
+    rmdirSync(p, options, er)
+  }
+}
+
+function rmdirSync (p, options, originalEr) {
+  assert(p)
+  assert(options)
+  if (originalEr) {
+    assert(originalEr instanceof Error)
+  }
+
+  try {
+    options.rmdirSync(p)
+  } catch (er) {
+    if (er.code === 'ENOTDIR') {
+      throw originalEr
+    } else if (er.code === 'ENOTEMPTY' || er.code === 'EEXIST' || er.code === 'EPERM') {
+      rmkidsSync(p, options)
+    } else if (er.code !== 'ENOENT') {
+      throw er
+    }
+  }
+}
+
+function rmkidsSync (p, options) {
+  assert(p)
+  assert(options)
+  options.readdirSync(p).forEach(f => rimrafSync(path.join(p, f), options))
+
+  if (isWindows) {
+    // We only end up here once we got ENOTEMPTY at least once, and
+    // at this point, we are guaranteed to have removed all the kids.
+    // So, we know that it won't be ENOENT or ENOTDIR or anything else.
+    // try really hard to delete stuff on windows, because it has a
+    // PROFOUNDLY annoying habit of not closing handles promptly when
+    // files are deleted, resulting in spurious ENOTEMPTY errors.
+    const startTime = Date.now()
+    do {
+      try {
+        const ret = options.rmdirSync(p, options)
+        return ret
+      } catch (er) { }
+    } while (Date.now() - startTime < 500) // give up after 500ms
+  } else {
+    const ret = options.rmdirSync(p, options)
+    return ret
+  }
+}
+
+module.exports = rimraf
+rimraf.sync = rimrafSync
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/util/buffer.js":
+/*!**************************************************!*\
+  !*** ./node_modules/fs-extra/lib/util/buffer.js ***!
+  \**************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+/* eslint-disable node/no-deprecated-api */
+module.exports = function (size) {
+  if (typeof Buffer.allocUnsafe === 'function') {
+    try {
+      return Buffer.allocUnsafe(size)
+    } catch (e) {
+      return new Buffer(size)
+    }
+  }
+  return new Buffer(size)
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/fs-extra/lib/util/utimes.js":
+/*!**************************************************!*\
+  !*** ./node_modules/fs-extra/lib/util/utimes.js ***!
+  \**************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+const os = __webpack_require__(/*! os */ "os")
+const path = __webpack_require__(/*! path */ "path")
+
+// HFS, ext{2,3}, FAT do not, Node.js v0.10 does not
+function hasMillisResSync () {
+  let tmpfile = path.join('millis-test-sync' + Date.now().toString() + Math.random().toString().slice(2))
+  tmpfile = path.join(os.tmpdir(), tmpfile)
+
+  // 550 millis past UNIX epoch
+  const d = new Date(1435410243862)
+  fs.writeFileSync(tmpfile, 'https://github.com/jprichardson/node-fs-extra/pull/141')
+  const fd = fs.openSync(tmpfile, 'r+')
+  fs.futimesSync(fd, d, d)
+  fs.closeSync(fd)
+  return fs.statSync(tmpfile).mtime > 1435410243000
+}
+
+function hasMillisRes (callback) {
+  let tmpfile = path.join('millis-test' + Date.now().toString() + Math.random().toString().slice(2))
+  tmpfile = path.join(os.tmpdir(), tmpfile)
+
+  // 550 millis past UNIX epoch
+  const d = new Date(1435410243862)
+  fs.writeFile(tmpfile, 'https://github.com/jprichardson/node-fs-extra/pull/141', err => {
+    if (err) return callback(err)
+    fs.open(tmpfile, 'r+', (err, fd) => {
+      if (err) return callback(err)
+      fs.futimes(fd, d, d, err => {
+        if (err) return callback(err)
+        fs.close(fd, err => {
+          if (err) return callback(err)
+          fs.stat(tmpfile, (err, stats) => {
+            if (err) return callback(err)
+            callback(null, stats.mtime > 1435410243000)
+          })
+        })
+      })
+    })
+  })
+}
+
+function timeRemoveMillis (timestamp) {
+  if (typeof timestamp === 'number') {
+    return Math.floor(timestamp / 1000) * 1000
+  } else if (timestamp instanceof Date) {
+    return new Date(Math.floor(timestamp.getTime() / 1000) * 1000)
+  } else {
+    throw new Error('fs-extra: timeRemoveMillis() unknown parameter type')
+  }
+}
+
+function utimesMillis (path, atime, mtime, callback) {
+  // if (!HAS_MILLIS_RES) return fs.utimes(path, atime, mtime, callback)
+  fs.open(path, 'r+', (err, fd) => {
+    if (err) return callback(err)
+    fs.futimes(fd, atime, mtime, futimesErr => {
+      fs.close(fd, closeErr => {
+        if (callback) callback(futimesErr || closeErr)
+      })
+    })
+  })
+}
+
+function utimesMillisSync (path, atime, mtime) {
+  const fd = fs.openSync(path, 'r+')
+  fs.futimesSync(fd, atime, mtime)
+  return fs.closeSync(fd)
+}
+
+module.exports = {
+  hasMillisRes,
+  hasMillisResSync,
+  timeRemoveMillis,
+  utimesMillis,
+  utimesMillisSync
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/graceful-fs/clone.js":
+/*!*******************************************!*\
+  !*** ./node_modules/graceful-fs/clone.js ***!
+  \*******************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+module.exports = clone
+
+function clone (obj) {
+  if (obj === null || typeof obj !== 'object')
+    return obj
+
+  if (obj instanceof Object)
+    var copy = { __proto__: obj.__proto__ }
+  else
+    var copy = Object.create(null)
+
+  Object.getOwnPropertyNames(obj).forEach(function (key) {
+    Object.defineProperty(copy, key, Object.getOwnPropertyDescriptor(obj, key))
+  })
+
+  return copy
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/graceful-fs/graceful-fs.js":
+/*!*************************************************!*\
+  !*** ./node_modules/graceful-fs/graceful-fs.js ***!
+  \*************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+var fs = __webpack_require__(/*! fs */ "fs")
+var polyfills = __webpack_require__(/*! ./polyfills.js */ "./node_modules/graceful-fs/polyfills.js")
+var legacy = __webpack_require__(/*! ./legacy-streams.js */ "./node_modules/graceful-fs/legacy-streams.js")
+var clone = __webpack_require__(/*! ./clone.js */ "./node_modules/graceful-fs/clone.js")
+
+var queue = []
+
+var util = __webpack_require__(/*! util */ "util")
+
+function noop () {}
+
+var debug = noop
+if (util.debuglog)
+  debug = util.debuglog('gfs4')
+else if (/\bgfs4\b/i.test(process.env.NODE_DEBUG || ''))
+  debug = function() {
+    var m = util.format.apply(util, arguments)
+    m = 'GFS4: ' + m.split(/\n/).join('\nGFS4: ')
+    console.error(m)
+  }
+
+if (/\bgfs4\b/i.test(process.env.NODE_DEBUG || '')) {
+  process.on('exit', function() {
+    debug(queue)
+    __webpack_require__(/*! assert */ "assert").equal(queue.length, 0)
+  })
+}
+
+module.exports = patch(clone(fs))
+if (process.env.TEST_GRACEFUL_FS_GLOBAL_PATCH && !fs.__patched) {
+    module.exports = patch(fs)
+    fs.__patched = true;
+}
+
+// Always patch fs.close/closeSync, because we want to
+// retry() whenever a close happens *anywhere* in the program.
+// This is essential when multiple graceful-fs instances are
+// in play at the same time.
+module.exports.close = (function (fs$close) { return function (fd, cb) {
+  return fs$close.call(fs, fd, function (err) {
+    if (!err)
+      retry()
+
+    if (typeof cb === 'function')
+      cb.apply(this, arguments)
+  })
+}})(fs.close)
+
+module.exports.closeSync = (function (fs$closeSync) { return function (fd) {
+  // Note that graceful-fs also retries when fs.closeSync() fails.
+  // Looks like a bug to me, although it's probably a harmless one.
+  var rval = fs$closeSync.apply(fs, arguments)
+  retry()
+  return rval
+}})(fs.closeSync)
+
+// Only patch fs once, otherwise we'll run into a memory leak if
+// graceful-fs is loaded multiple times, such as in test environments that
+// reset the loaded modules between tests.
+// We look for the string `graceful-fs` from the comment above. This
+// way we are not adding any extra properties and it will detect if older
+// versions of graceful-fs are installed.
+if (!/\bgraceful-fs\b/.test(fs.closeSync.toString())) {
+  fs.closeSync = module.exports.closeSync;
+  fs.close = module.exports.close;
+}
+
+function patch (fs) {
+  // Everything that references the open() function needs to be in here
+  polyfills(fs)
+  fs.gracefulify = patch
+  fs.FileReadStream = ReadStream;  // Legacy name.
+  fs.FileWriteStream = WriteStream;  // Legacy name.
+  fs.createReadStream = createReadStream
+  fs.createWriteStream = createWriteStream
+  var fs$readFile = fs.readFile
+  fs.readFile = readFile
+  function readFile (path, options, cb) {
+    if (typeof options === 'function')
+      cb = options, options = null
+
+    return go$readFile(path, options, cb)
+
+    function go$readFile (path, options, cb) {
+      return fs$readFile(path, options, function (err) {
+        if (err && (err.code === 'EMFILE' || err.code === 'ENFILE'))
+          enqueue([go$readFile, [path, options, cb]])
+        else {
+          if (typeof cb === 'function')
+            cb.apply(this, arguments)
+          retry()
+        }
+      })
+    }
+  }
+
+  var fs$writeFile = fs.writeFile
+  fs.writeFile = writeFile
+  function writeFile (path, data, options, cb) {
+    if (typeof options === 'function')
+      cb = options, options = null
+
+    return go$writeFile(path, data, options, cb)
+
+    function go$writeFile (path, data, options, cb) {
+      return fs$writeFile(path, data, options, function (err) {
+        if (err && (err.code === 'EMFILE' || err.code === 'ENFILE'))
+          enqueue([go$writeFile, [path, data, options, cb]])
+        else {
+          if (typeof cb === 'function')
+            cb.apply(this, arguments)
+          retry()
+        }
+      })
+    }
+  }
+
+  var fs$appendFile = fs.appendFile
+  if (fs$appendFile)
+    fs.appendFile = appendFile
+  function appendFile (path, data, options, cb) {
+    if (typeof options === 'function')
+      cb = options, options = null
+
+    return go$appendFile(path, data, options, cb)
+
+    function go$appendFile (path, data, options, cb) {
+      return fs$appendFile(path, data, options, function (err) {
+        if (err && (err.code === 'EMFILE' || err.code === 'ENFILE'))
+          enqueue([go$appendFile, [path, data, options, cb]])
+        else {
+          if (typeof cb === 'function')
+            cb.apply(this, arguments)
+          retry()
+        }
+      })
+    }
+  }
+
+  var fs$readdir = fs.readdir
+  fs.readdir = readdir
+  function readdir (path, options, cb) {
+    var args = [path]
+    if (typeof options !== 'function') {
+      args.push(options)
+    } else {
+      cb = options
+    }
+    args.push(go$readdir$cb)
+
+    return go$readdir(args)
+
+    function go$readdir$cb (err, files) {
+      if (files && files.sort)
+        files.sort()
+
+      if (err && (err.code === 'EMFILE' || err.code === 'ENFILE'))
+        enqueue([go$readdir, [args]])
+
+      else {
+        if (typeof cb === 'function')
+          cb.apply(this, arguments)
+        retry()
+      }
+    }
+  }
+
+  function go$readdir (args) {
+    return fs$readdir.apply(fs, args)
+  }
+
+  if (process.version.substr(0, 4) === 'v0.8') {
+    var legStreams = legacy(fs)
+    ReadStream = legStreams.ReadStream
+    WriteStream = legStreams.WriteStream
+  }
+
+  var fs$ReadStream = fs.ReadStream
+  if (fs$ReadStream) {
+    ReadStream.prototype = Object.create(fs$ReadStream.prototype)
+    ReadStream.prototype.open = ReadStream$open
+  }
+
+  var fs$WriteStream = fs.WriteStream
+  if (fs$WriteStream) {
+    WriteStream.prototype = Object.create(fs$WriteStream.prototype)
+    WriteStream.prototype.open = WriteStream$open
+  }
+
+  fs.ReadStream = ReadStream
+  fs.WriteStream = WriteStream
+
+  function ReadStream (path, options) {
+    if (this instanceof ReadStream)
+      return fs$ReadStream.apply(this, arguments), this
+    else
+      return ReadStream.apply(Object.create(ReadStream.prototype), arguments)
+  }
+
+  function ReadStream$open () {
+    var that = this
+    open(that.path, that.flags, that.mode, function (err, fd) {
+      if (err) {
+        if (that.autoClose)
+          that.destroy()
+
+        that.emit('error', err)
+      } else {
+        that.fd = fd
+        that.emit('open', fd)
+        that.read()
+      }
+    })
+  }
+
+  function WriteStream (path, options) {
+    if (this instanceof WriteStream)
+      return fs$WriteStream.apply(this, arguments), this
+    else
+      return WriteStream.apply(Object.create(WriteStream.prototype), arguments)
+  }
+
+  function WriteStream$open () {
+    var that = this
+    open(that.path, that.flags, that.mode, function (err, fd) {
+      if (err) {
+        that.destroy()
+        that.emit('error', err)
+      } else {
+        that.fd = fd
+        that.emit('open', fd)
+      }
+    })
+  }
+
+  function createReadStream (path, options) {
+    return new ReadStream(path, options)
+  }
+
+  function createWriteStream (path, options) {
+    return new WriteStream(path, options)
+  }
+
+  var fs$open = fs.open
+  fs.open = open
+  function open (path, flags, mode, cb) {
+    if (typeof mode === 'function')
+      cb = mode, mode = null
+
+    return go$open(path, flags, mode, cb)
+
+    function go$open (path, flags, mode, cb) {
+      return fs$open(path, flags, mode, function (err, fd) {
+        if (err && (err.code === 'EMFILE' || err.code === 'ENFILE'))
+          enqueue([go$open, [path, flags, mode, cb]])
+        else {
+          if (typeof cb === 'function')
+            cb.apply(this, arguments)
+          retry()
+        }
+      })
+    }
+  }
+
+  return fs
+}
+
+function enqueue (elem) {
+  debug('ENQUEUE', elem[0].name, elem[1])
+  queue.push(elem)
+}
+
+function retry () {
+  var elem = queue.shift()
+  if (elem) {
+    debug('RETRY', elem[0].name, elem[1])
+    elem[0].apply(null, elem[1])
+  }
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/graceful-fs/legacy-streams.js":
+/*!****************************************************!*\
+  !*** ./node_modules/graceful-fs/legacy-streams.js ***!
+  \****************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+var Stream = __webpack_require__(/*! stream */ "stream").Stream
+
+module.exports = legacy
+
+function legacy (fs) {
+  return {
+    ReadStream: ReadStream,
+    WriteStream: WriteStream
+  }
+
+  function ReadStream (path, options) {
+    if (!(this instanceof ReadStream)) return new ReadStream(path, options);
+
+    Stream.call(this);
+
+    var self = this;
+
+    this.path = path;
+    this.fd = null;
+    this.readable = true;
+    this.paused = false;
+
+    this.flags = 'r';
+    this.mode = 438; /*=0666*/
+    this.bufferSize = 64 * 1024;
+
+    options = options || {};
+
+    // Mixin options into this
+    var keys = Object.keys(options);
+    for (var index = 0, length = keys.length; index < length; index++) {
+      var key = keys[index];
+      this[key] = options[key];
+    }
+
+    if (this.encoding) this.setEncoding(this.encoding);
+
+    if (this.start !== undefined) {
+      if ('number' !== typeof this.start) {
+        throw TypeError('start must be a Number');
+      }
+      if (this.end === undefined) {
+        this.end = Infinity;
+      } else if ('number' !== typeof this.end) {
+        throw TypeError('end must be a Number');
+      }
+
+      if (this.start > this.end) {
+        throw new Error('start must be <= end');
+      }
+
+      this.pos = this.start;
+    }
+
+    if (this.fd !== null) {
+      process.nextTick(function() {
+        self._read();
+      });
+      return;
+    }
+
+    fs.open(this.path, this.flags, this.mode, function (err, fd) {
+      if (err) {
+        self.emit('error', err);
+        self.readable = false;
+        return;
+      }
+
+      self.fd = fd;
+      self.emit('open', fd);
+      self._read();
+    })
+  }
+
+  function WriteStream (path, options) {
+    if (!(this instanceof WriteStream)) return new WriteStream(path, options);
+
+    Stream.call(this);
+
+    this.path = path;
+    this.fd = null;
+    this.writable = true;
+
+    this.flags = 'w';
+    this.encoding = 'binary';
+    this.mode = 438; /*=0666*/
+    this.bytesWritten = 0;
+
+    options = options || {};
+
+    // Mixin options into this
+    var keys = Object.keys(options);
+    for (var index = 0, length = keys.length; index < length; index++) {
+      var key = keys[index];
+      this[key] = options[key];
+    }
+
+    if (this.start !== undefined) {
+      if ('number' !== typeof this.start) {
+        throw TypeError('start must be a Number');
+      }
+      if (this.start < 0) {
+        throw new Error('start must be >= zero');
+      }
+
+      this.pos = this.start;
+    }
+
+    this.busy = false;
+    this._queue = [];
+
+    if (this.fd === null) {
+      this._open = fs.open;
+      this._queue.push([this._open, this.path, this.flags, this.mode, undefined]);
+      this.flush();
+    }
+  }
+}
+
+
+/***/ }),
+
+/***/ "./node_modules/graceful-fs/polyfills.js":
+/*!***********************************************!*\
+  !*** ./node_modules/graceful-fs/polyfills.js ***!
+  \***********************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+var constants = __webpack_require__(/*! constants */ "constants")
+
+var origCwd = process.cwd
+var cwd = null
+
+var platform = process.env.GRACEFUL_FS_PLATFORM || process.platform
+
+process.cwd = function() {
+  if (!cwd)
+    cwd = origCwd.call(process)
+  return cwd
+}
+try {
+  process.cwd()
+} catch (er) {}
+
+var chdir = process.chdir
+process.chdir = function(d) {
+  cwd = null
+  chdir.call(process, d)
+}
+
+module.exports = patch
+
+function patch (fs) {
+  // (re-)implement some things that are known busted or missing.
+
+  // lchmod, broken prior to 0.6.2
+  // back-port the fix here.
+  if (constants.hasOwnProperty('O_SYMLINK') &&
+      process.version.match(/^v0\.6\.[0-2]|^v0\.5\./)) {
+    patchLchmod(fs)
+  }
+
+  // lutimes implementation, or no-op
+  if (!fs.lutimes) {
+    patchLutimes(fs)
+  }
+
+  // https://github.com/isaacs/node-graceful-fs/issues/4
+  // Chown should not fail on einval or eperm if non-root.
+  // It should not fail on enosys ever, as this just indicates
+  // that a fs doesn't support the intended operation.
+
+  fs.chown = chownFix(fs.chown)
+  fs.fchown = chownFix(fs.fchown)
+  fs.lchown = chownFix(fs.lchown)
+
+  fs.chmod = chmodFix(fs.chmod)
+  fs.fchmod = chmodFix(fs.fchmod)
+  fs.lchmod = chmodFix(fs.lchmod)
+
+  fs.chownSync = chownFixSync(fs.chownSync)
+  fs.fchownSync = chownFixSync(fs.fchownSync)
+  fs.lchownSync = chownFixSync(fs.lchownSync)
+
+  fs.chmodSync = chmodFixSync(fs.chmodSync)
+  fs.fchmodSync = chmodFixSync(fs.fchmodSync)
+  fs.lchmodSync = chmodFixSync(fs.lchmodSync)
+
+  fs.stat = statFix(fs.stat)
+  fs.fstat = statFix(fs.fstat)
+  fs.lstat = statFix(fs.lstat)
+
+  fs.statSync = statFixSync(fs.statSync)
+  fs.fstatSync = statFixSync(fs.fstatSync)
+  fs.lstatSync = statFixSync(fs.lstatSync)
+
+  // if lchmod/lchown do not exist, then make them no-ops
+  if (!fs.lchmod) {
+    fs.lchmod = function (path, mode, cb) {
+      if (cb) process.nextTick(cb)
+    }
+    fs.lchmodSync = function () {}
+  }
+  if (!fs.lchown) {
+    fs.lchown = function (path, uid, gid, cb) {
+      if (cb) process.nextTick(cb)
+    }
+    fs.lchownSync = function () {}
+  }
+
+  // on Windows, A/V software can lock the directory, causing this
+  // to fail with an EACCES or EPERM if the directory contains newly
+  // created files.  Try again on failure, for up to 60 seconds.
+
+  // Set the timeout this long because some Windows Anti-Virus, such as Parity
+  // bit9, may lock files for up to a minute, causing npm package install
+  // failures. Also, take care to yield the scheduler. Windows scheduling gives
+  // CPU to a busy looping process, which can cause the program causing the lock
+  // contention to be starved of CPU by node, so the contention doesn't resolve.
+  if (platform === "win32") {
+    fs.rename = (function (fs$rename) { return function (from, to, cb) {
+      var start = Date.now()
+      var backoff = 0;
+      fs$rename(from, to, function CB (er) {
+        if (er
+            && (er.code === "EACCES" || er.code === "EPERM")
+            && Date.now() - start < 60000) {
+          setTimeout(function() {
+            fs.stat(to, function (stater, st) {
+              if (stater && stater.code === "ENOENT")
+                fs$rename(from, to, CB);
+              else
+                cb(er)
+            })
+          }, backoff)
+          if (backoff < 100)
+            backoff += 10;
+          return;
+        }
+        if (cb) cb(er)
+      })
+    }})(fs.rename)
+  }
+
+  // if read() returns EAGAIN, then just try it again.
+  fs.read = (function (fs$read) { return function (fd, buffer, offset, length, position, callback_) {
+    var callback
+    if (callback_ && typeof callback_ === 'function') {
+      var eagCounter = 0
+      callback = function (er, _, __) {
+        if (er && er.code === 'EAGAIN' && eagCounter < 10) {
+          eagCounter ++
+          return fs$read.call(fs, fd, buffer, offset, length, position, callback)
+        }
+        callback_.apply(this, arguments)
+      }
+    }
+    return fs$read.call(fs, fd, buffer, offset, length, position, callback)
+  }})(fs.read)
+
+  fs.readSync = (function (fs$readSync) { return function (fd, buffer, offset, length, position) {
+    var eagCounter = 0
+    while (true) {
+      try {
+        return fs$readSync.call(fs, fd, buffer, offset, length, position)
+      } catch (er) {
+        if (er.code === 'EAGAIN' && eagCounter < 10) {
+          eagCounter ++
+          continue
+        }
+        throw er
+      }
+    }
+  }})(fs.readSync)
+
+  function patchLchmod (fs) {
+    fs.lchmod = function (path, mode, callback) {
+      fs.open( path
+             , constants.O_WRONLY | constants.O_SYMLINK
+             , mode
+             , function (err, fd) {
+        if (err) {
+          if (callback) callback(err)
+          return
+        }
+        // prefer to return the chmod error, if one occurs,
+        // but still try to close, and report closing errors if they occur.
+        fs.fchmod(fd, mode, function (err) {
+          fs.close(fd, function(err2) {
+            if (callback) callback(err || err2)
+          })
+        })
+      })
+    }
+
+    fs.lchmodSync = function (path, mode) {
+      var fd = fs.openSync(path, constants.O_WRONLY | constants.O_SYMLINK, mode)
+
+      // prefer to return the chmod error, if one occurs,
+      // but still try to close, and report closing errors if they occur.
+      var threw = true
+      var ret
+      try {
+        ret = fs.fchmodSync(fd, mode)
+        threw = false
+      } finally {
+        if (threw) {
+          try {
+            fs.closeSync(fd)
+          } catch (er) {}
+        } else {
+          fs.closeSync(fd)
+        }
+      }
+      return ret
+    }
+  }
+
+  function patchLutimes (fs) {
+    if (constants.hasOwnProperty("O_SYMLINK")) {
+      fs.lutimes = function (path, at, mt, cb) {
+        fs.open(path, constants.O_SYMLINK, function (er, fd) {
+          if (er) {
+            if (cb) cb(er)
+            return
+          }
+          fs.futimes(fd, at, mt, function (er) {
+            fs.close(fd, function (er2) {
+              if (cb) cb(er || er2)
+            })
+          })
+        })
+      }
+
+      fs.lutimesSync = function (path, at, mt) {
+        var fd = fs.openSync(path, constants.O_SYMLINK)
+        var ret
+        var threw = true
+        try {
+          ret = fs.futimesSync(fd, at, mt)
+          threw = false
+        } finally {
+          if (threw) {
+            try {
+              fs.closeSync(fd)
+            } catch (er) {}
+          } else {
+            fs.closeSync(fd)
+          }
+        }
+        return ret
+      }
+
+    } else {
+      fs.lutimes = function (_a, _b, _c, cb) { if (cb) process.nextTick(cb) }
+      fs.lutimesSync = function () {}
+    }
+  }
+
+  function chmodFix (orig) {
+    if (!orig) return orig
+    return function (target, mode, cb) {
+      return orig.call(fs, target, mode, function (er) {
+        if (chownErOk(er)) er = null
+        if (cb) cb.apply(this, arguments)
+      })
+    }
+  }
+
+  function chmodFixSync (orig) {
+    if (!orig) return orig
+    return function (target, mode) {
+      try {
+        return orig.call(fs, target, mode)
+      } catch (er) {
+        if (!chownErOk(er)) throw er
+      }
+    }
+  }
+
+
+  function chownFix (orig) {
+    if (!orig) return orig
+    return function (target, uid, gid, cb) {
+      return orig.call(fs, target, uid, gid, function (er) {
+        if (chownErOk(er)) er = null
+        if (cb) cb.apply(this, arguments)
+      })
+    }
+  }
+
+  function chownFixSync (orig) {
+    if (!orig) return orig
+    return function (target, uid, gid) {
+      try {
+        return orig.call(fs, target, uid, gid)
+      } catch (er) {
+        if (!chownErOk(er)) throw er
+      }
+    }
+  }
+
+
+  function statFix (orig) {
+    if (!orig) return orig
+    // Older versions of Node erroneously returned signed integers for
+    // uid + gid.
+    return function (target, cb) {
+      return orig.call(fs, target, function (er, stats) {
+        if (!stats) return cb.apply(this, arguments)
+        if (stats.uid < 0) stats.uid += 0x100000000
+        if (stats.gid < 0) stats.gid += 0x100000000
+        if (cb) cb.apply(this, arguments)
+      })
+    }
+  }
+
+  function statFixSync (orig) {
+    if (!orig) return orig
+    // Older versions of Node erroneously returned signed integers for
+    // uid + gid.
+    return function (target) {
+      var stats = orig.call(fs, target)
+      if (stats.uid < 0) stats.uid += 0x100000000
+      if (stats.gid < 0) stats.gid += 0x100000000
+      return stats;
+    }
+  }
+
+  // ENOSYS means that the fs doesn't support the op. Just ignore
+  // that, because it doesn't matter.
+  //
+  // if there's no getuid, or if getuid() is something other
+  // than 0, and the error is EINVAL or EPERM, then just ignore
+  // it.
+  //
+  // This specific case is a silent failure in cp, install, tar,
+  // and most other unix tools that manage permissions.
+  //
+  // When running as root, or if other types of errors are
+  // encountered, then it's strict.
+  function chownErOk (er) {
+    if (!er)
+      return true
+
+    if (er.code === "ENOSYS")
+      return true
+
+    var nonroot = !process.getuid || process.getuid() !== 0
+    if (nonroot) {
+      if (er.code === "EINVAL" || er.code === "EPERM")
+        return true
+    }
+
+    return false
+  }
+}
+
+
+/***/ }),
+
 /***/ "./node_modules/gud/index.js":
 /*!***********************************!*\
   !*** ./node_modules/gud/index.js ***!
@@ -1401,6 +4389,151 @@ var invariant = function(condition, format, a, b, c, d, e, f) {
 };
 
 module.exports = invariant;
+
+
+/***/ }),
+
+/***/ "./node_modules/jsonfile/index.js":
+/*!****************************************!*\
+  !*** ./node_modules/jsonfile/index.js ***!
+  \****************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+var _fs
+try {
+  _fs = __webpack_require__(/*! graceful-fs */ "./node_modules/graceful-fs/graceful-fs.js")
+} catch (_) {
+  _fs = __webpack_require__(/*! fs */ "fs")
+}
+
+function readFile (file, options, callback) {
+  if (callback == null) {
+    callback = options
+    options = {}
+  }
+
+  if (typeof options === 'string') {
+    options = {encoding: options}
+  }
+
+  options = options || {}
+  var fs = options.fs || _fs
+
+  var shouldThrow = true
+  if ('throws' in options) {
+    shouldThrow = options.throws
+  }
+
+  fs.readFile(file, options, function (err, data) {
+    if (err) return callback(err)
+
+    data = stripBom(data)
+
+    var obj
+    try {
+      obj = JSON.parse(data, options ? options.reviver : null)
+    } catch (err2) {
+      if (shouldThrow) {
+        err2.message = file + ': ' + err2.message
+        return callback(err2)
+      } else {
+        return callback(null, null)
+      }
+    }
+
+    callback(null, obj)
+  })
+}
+
+function readFileSync (file, options) {
+  options = options || {}
+  if (typeof options === 'string') {
+    options = {encoding: options}
+  }
+
+  var fs = options.fs || _fs
+
+  var shouldThrow = true
+  if ('throws' in options) {
+    shouldThrow = options.throws
+  }
+
+  try {
+    var content = fs.readFileSync(file, options)
+    content = stripBom(content)
+    return JSON.parse(content, options.reviver)
+  } catch (err) {
+    if (shouldThrow) {
+      err.message = file + ': ' + err.message
+      throw err
+    } else {
+      return null
+    }
+  }
+}
+
+function stringify (obj, options) {
+  var spaces
+  var EOL = '\n'
+  if (typeof options === 'object' && options !== null) {
+    if (options.spaces) {
+      spaces = options.spaces
+    }
+    if (options.EOL) {
+      EOL = options.EOL
+    }
+  }
+
+  var str = JSON.stringify(obj, options ? options.replacer : null, spaces)
+
+  return str.replace(/\n/g, EOL) + EOL
+}
+
+function writeFile (file, obj, options, callback) {
+  if (callback == null) {
+    callback = options
+    options = {}
+  }
+  options = options || {}
+  var fs = options.fs || _fs
+
+  var str = ''
+  try {
+    str = stringify(obj, options)
+  } catch (err) {
+    // Need to return whether a callback was passed or not
+    if (callback) callback(err, null)
+    return
+  }
+
+  fs.writeFile(file, str, options, callback)
+}
+
+function writeFileSync (file, obj, options) {
+  options = options || {}
+  var fs = options.fs || _fs
+
+  var str = stringify(obj, options)
+  // not sure if fs.writeFileSync returns anything, but just in case
+  return fs.writeFileSync(file, str, options)
+}
+
+function stripBom (content) {
+  // we do this because JSON.parse would convert it to a utf8 string if encoding wasn't specified
+  if (Buffer.isBuffer(content)) content = content.toString('utf8')
+  content = content.replace(/^\uFEFF/, '')
+  return content
+}
+
+var jsonfile = {
+  readFile: readFile,
+  readFileSync: readFileSync,
+  writeFile: writeFile,
+  writeFileSync: writeFileSync
+}
+
+module.exports = jsonfile
 
 
 /***/ }),
@@ -61710,6 +64843,43 @@ function symbolObservablePonyfill(root) {
 
 /***/ }),
 
+/***/ "./node_modules/universalify/index.js":
+/*!********************************************!*\
+  !*** ./node_modules/universalify/index.js ***!
+  \********************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+exports.fromCallback = function (fn) {
+  return Object.defineProperty(function () {
+    if (typeof arguments[arguments.length - 1] === 'function') fn.apply(this, arguments)
+    else {
+      return new Promise((resolve, reject) => {
+        arguments[arguments.length] = (err, res) => {
+          if (err) return reject(err)
+          resolve(res)
+        }
+        arguments.length++
+        fn.apply(this, arguments)
+      })
+    }
+  }, 'name', { value: fn.name })
+}
+
+exports.fromPromise = function (fn) {
+  return Object.defineProperty(function () {
+    const cb = arguments[arguments.length - 1]
+    if (typeof cb !== 'function') return fn.apply(this, arguments)
+    else fn.apply(this, arguments).then(r => cb(null, r), cb)
+  }, 'name', { value: fn.name })
+}
+
+
+/***/ }),
+
 /***/ "./node_modules/uuid/index.js":
 /*!************************************!*\
   !*** ./node_modules/uuid/index.js ***!
@@ -62102,7 +65272,7 @@ var combineReducer = redux_1.combineReducers({
 });
 var store = redux_1.createStore(combineReducer);
 exports.default = store;
-//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiU3RvcmUuanMiLCJzb3VyY2VSb290IjoiLi90c3gvIiwic291cmNlcyI6WyJTdG9yZS50cyJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiOztBQUFBLCtCQUFtRDtBQUVuRCxzREFBbUQ7QUFPbkQsSUFBTSxjQUFjLEdBQUcsdUJBQWUsQ0FBUztJQUMzQyxRQUFRLEVBQUUseUJBQVc7Q0FDeEIsQ0FBQyxDQUFDO0FBRUgsSUFBTSxLQUFLLEdBQUcsbUJBQVcsQ0FBQyxjQUFjLENBQUMsQ0FBQztBQUMxQyxrQkFBZSxLQUFLLENBQUMiLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQge2NvbWJpbmVSZWR1Y2VycywgY3JlYXRlU3RvcmV9IGZyb20gJ3JlZHV4JztcblxuaW1wb3J0IHtUYXNrUmVkdWNlcn0gZnJvbSAnLi9yZWR1Y2Vycy9UYXNrUmVkdWNlcic7XG5pbXBvcnQge0lUYXNrTGlzdH0gZnJvbSAnLi9zdGF0ZXMvSVRhc2snO1xuXG5leHBvcnQgaW50ZXJmYWNlIElTdGF0ZSB7XG4gICAgdGFza0xpc3Q6IElUYXNrTGlzdDtcbn1cblxuY29uc3QgY29tYmluZVJlZHVjZXIgPSBjb21iaW5lUmVkdWNlcnM8SVN0YXRlPih7XG4gICAgdGFza0xpc3Q6IFRhc2tSZWR1Y2VyLFxufSk7XG5cbmNvbnN0IHN0b3JlID0gY3JlYXRlU3RvcmUoY29tYmluZVJlZHVjZXIpO1xuZXhwb3J0IGRlZmF1bHQgc3RvcmU7XG4iXX0=
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiU3RvcmUuanMiLCJzb3VyY2VSb290IjoiLi90c3gvIiwic291cmNlcyI6WyJTdG9yZS50cyJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiOztBQUFBLCtCQUFtRDtBQUVuRCxzREFBbUQ7QUFFbkQsSUFBTSxjQUFjLEdBQUcsdUJBQWUsQ0FBUztJQUMzQyxRQUFRLEVBQUUseUJBQVc7Q0FDeEIsQ0FBQyxDQUFDO0FBRUgsSUFBTSxLQUFLLEdBQUcsbUJBQVcsQ0FBQyxjQUFjLENBQUMsQ0FBQztBQUMxQyxrQkFBZSxLQUFLLENBQUMiLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQge2NvbWJpbmVSZWR1Y2VycywgY3JlYXRlU3RvcmV9IGZyb20gJ3JlZHV4JztcbmltcG9ydCB7SVN0YXRlfSBmcm9tICcuL0lTdG9yZSc7XG5pbXBvcnQge1Rhc2tSZWR1Y2VyfSBmcm9tICcuL3JlZHVjZXJzL1Rhc2tSZWR1Y2VyJztcblxuY29uc3QgY29tYmluZVJlZHVjZXIgPSBjb21iaW5lUmVkdWNlcnM8SVN0YXRlPih7XG4gICAgdGFza0xpc3Q6IFRhc2tSZWR1Y2VyLFxufSk7XG5cbmNvbnN0IHN0b3JlID0gY3JlYXRlU3RvcmUoY29tYmluZVJlZHVjZXIpO1xuZXhwb3J0IGRlZmF1bHQgc3RvcmU7XG4iXX0=
 
 /***/ }),
 
@@ -62115,64 +65285,139 @@ exports.default = store;
 
 "use strict";
 
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : new P(function (resolve) { resolve(result.value); }).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
 };
+var __generator = (this && this.__generator) || function (thisArg, body) {
+    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g;
+    return g = { next: verb(0), "throw": verb(1), "return": verb(2) }, typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
+    function verb(n) { return function (v) { return step([n, v]); }; }
+    function step(op) {
+        if (f) throw new TypeError("Generator is already executing.");
+        while (_) try {
+            if (f = 1, y && (t = op[0] & 2 ? y["return"] : op[0] ? y["throw"] || ((t = y["return"]) && t.call(y), 0) : y.next) && !(t = t.call(y, op[1])).done) return t;
+            if (y = 0, t) op = [op[0] & 2, t.value];
+            switch (op[0]) {
+                case 0: case 1: t = op; break;
+                case 4: _.label++; return { value: op[1], done: false };
+                case 5: _.label++; y = op[1]; op = [0]; continue;
+                case 7: op = _.ops.pop(); _.trys.pop(); continue;
+                default:
+                    if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
+                    if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }
+                    if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }
+                    if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }
+                    if (t[2]) _.ops.pop();
+                    _.trys.pop(); continue;
+            }
+            op = body.call(thisArg, _);
+        } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }
+        if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
+    }
+};
+var _this = this;
 Object.defineProperty(exports, "__esModule", { value: true });
-var moment_1 = __importDefault(__webpack_require__(/*! moment */ "./node_modules/moment/moment.js"));
+var TaskFileIF_1 = __webpack_require__(/*! ../utils/TaskFileIF */ "./ts/utils/TaskFileIF.ts");
 var TaskActions_1 = __webpack_require__(/*! ./TaskActions */ "./ts/actions/TaskActions.ts");
 exports.createShowTasksAction = function (tasks) {
-    var dummyTasks = [
-        {
-            complete: false,
-            deadline: moment_1.default().add(1, 'day').toDate(),
-            id: '0',
-            taskName: 'task01',
-        },
-        {
-            complete: true,
-            deadline: moment_1.default().add(1, 'day').toDate(),
-            id: '1',
-            taskName: 'task02',
-        },
-        {
-            complete: false,
-            deadline: moment_1.default().add(-1, 'day').toDate(),
-            id: '2',
-            taskName: 'task03',
-        },
-        {
-            complete: true,
-            deadline: moment_1.default().add(-1, 'day').toDate(),
-            id: '3',
-            taskName: 'task04',
-        },
-    ];
     return {
-        tasks: dummyTasks,
+        tasks: tasks,
         type: TaskActions_1.SHOW_TASKS,
     };
 };
-exports.createAddTaskAction = function (taskName, deadline) {
+exports.createAddTaskAction = function (taskName, deadline, store) {
+    (function () { return __awaiter(_this, void 0, void 0, function () {
+        var addAction, taskList;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    addAction = {
+                        deadline: deadline,
+                        taskName: taskName,
+                        type: TaskActions_1.ADD_TASK,
+                    };
+                    store.dispatch(addAction);
+                    taskList = store.getState().taskList;
+                    return [4 /*yield*/, TaskFileIF_1.saveState(taskList.tasks)];
+                case 1:
+                    _a.sent();
+                    store.dispatch({
+                        type: TaskActions_1.TOGGLE_SHOW_SPINNER,
+                    });
+                    return [2 /*return*/];
+            }
+        });
+    }); })();
     return {
-        deadline: deadline,
-        taskName: taskName,
-        type: TaskActions_1.ADD_TASK,
+        type: TaskActions_1.TOGGLE_SHOW_SPINNER,
     };
 };
-exports.createToggleCompleteAction = function (taskId) {
+exports.createToggleCompleteAction = function (taskId, store) {
+    (function () { return __awaiter(_this, void 0, void 0, function () {
+        var taskList;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    store.dispatch({
+                        taskId: taskId,
+                        type: TaskActions_1.TOGGLE_COMPLETE_TASK,
+                    });
+                    taskList = store.getState().taskList;
+                    return [4 /*yield*/, TaskFileIF_1.saveState(taskList.tasks)];
+                case 1:
+                    _a.sent();
+                    store.dispatch({
+                        type: TaskActions_1.TOGGLE_SHOW_SPINNER,
+                    });
+                    return [2 /*return*/];
+            }
+        });
+    }); })();
     return {
-        taskId: taskId,
-        type: TaskActions_1.TOGGLE_COMPLETE_TASK,
+        type: TaskActions_1.TOGGLE_SHOW_SPINNER,
     };
 };
-exports.createDeleteTaskAction = function (taskId) {
+exports.createDeleteTaskAction = function (taskId, store) {
+    (function () { return __awaiter(_this, void 0, void 0, function () {
+        var taskList;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    store.dispatch({ taskId: taskId, type: TaskActions_1.DELETE_TASK });
+                    taskList = store.getState().taskList;
+                    return [4 /*yield*/, TaskFileIF_1.saveState(taskList.tasks)];
+                case 1:
+                    _a.sent();
+                    store.dispatch({
+                        type: TaskActions_1.TOGGLE_SHOW_SPINNER,
+                    });
+                    return [2 /*return*/];
+            }
+        });
+    }); })();
     return {
-        taskId: taskId,
-        type: TaskActions_1.DELETE_TASK,
+        type: TaskActions_1.TOGGLE_SHOW_SPINNER,
     };
 };
-//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiVGFza0FjdGlvbkNyZWF0b3JzLmpzIiwic291cmNlUm9vdCI6Ii4vdHN4LyIsInNvdXJjZXMiOlsiYWN0aW9ucy9UYXNrQWN0aW9uQ3JlYXRvcnMudHMiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6Ijs7Ozs7QUFBQSxrREFBNEI7QUFFNUIsNkNBU3VCO0FBRVYsUUFBQSxxQkFBcUIsR0FBRyxVQUFDLEtBQWM7SUFDaEQsSUFBTSxVQUFVLEdBQVk7UUFDeEI7WUFDSSxRQUFRLEVBQUUsS0FBSztZQUNmLFFBQVEsRUFBRSxnQkFBTSxFQUFFLENBQUMsR0FBRyxDQUFDLENBQUMsRUFBRSxLQUFLLENBQUMsQ0FBQyxNQUFNLEVBQUU7WUFDekMsRUFBRSxFQUFFLEdBQUc7WUFDUCxRQUFRLEVBQUUsUUFBUTtTQUNyQjtRQUNEO1lBQ0ksUUFBUSxFQUFFLElBQUk7WUFDZCxRQUFRLEVBQUUsZ0JBQU0sRUFBRSxDQUFDLEdBQUcsQ0FBQyxDQUFDLEVBQUUsS0FBSyxDQUFDLENBQUMsTUFBTSxFQUFFO1lBQ3pDLEVBQUUsRUFBRSxHQUFHO1lBQ1AsUUFBUSxFQUFFLFFBQVE7U0FDckI7UUFDRDtZQUNJLFFBQVEsRUFBRSxLQUFLO1lBQ2YsUUFBUSxFQUFFLGdCQUFNLEVBQUUsQ0FBQyxHQUFHLENBQUMsQ0FBQyxDQUFDLEVBQUUsS0FBSyxDQUFDLENBQUMsTUFBTSxFQUFFO1lBQzFDLEVBQUUsRUFBRSxHQUFHO1lBQ1AsUUFBUSxFQUFFLFFBQVE7U0FDckI7UUFDRDtZQUNJLFFBQVEsRUFBRSxJQUFJO1lBQ2QsUUFBUSxFQUFFLGdCQUFNLEVBQUUsQ0FBQyxHQUFHLENBQUMsQ0FBQyxDQUFDLEVBQUUsS0FBSyxDQUFDLENBQUMsTUFBTSxFQUFFO1lBQzFDLEVBQUUsRUFBRSxHQUFHO1lBQ1AsUUFBUSxFQUFFLFFBQVE7U0FDckI7S0FDSixDQUFDO0lBQ0YsT0FBTztRQUNILEtBQUssRUFBRSxVQUFVO1FBQ2pCLElBQUksRUFBRSx3QkFBVTtLQUNuQixDQUFDO0FBQ04sQ0FBQyxDQUFDO0FBRVcsUUFBQSxtQkFBbUIsR0FBRyxVQUFDLFFBQWdCLEVBQUUsUUFBYztJQUNoRSxPQUFPO1FBQ0gsUUFBUSxVQUFBO1FBQ1IsUUFBUSxVQUFBO1FBQ1IsSUFBSSxFQUFFLHNCQUFRO0tBQ2pCLENBQUM7QUFDTixDQUFDLENBQUM7QUFFVyxRQUFBLDBCQUEwQixHQUFHLFVBQUMsTUFBYztJQUNyRCxPQUFPO1FBQ0gsTUFBTSxRQUFBO1FBQ04sSUFBSSxFQUFFLGtDQUFvQjtLQUM3QixDQUFDO0FBQ04sQ0FBQyxDQUFDO0FBRVcsUUFBQSxzQkFBc0IsR0FBRyxVQUFDLE1BQWM7SUFDakQsT0FBTztRQUNILE1BQU0sUUFBQTtRQUNOLElBQUksRUFBRSx5QkFBVztLQUNwQixDQUFDO0FBQ04sQ0FBQyxDQUFDIiwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IE1vbWVudCBmcm9tICdtb21lbnQnO1xuaW1wb3J0IHtJVGFza30gZnJvbSAnLi4vc3RhdGVzL0lUYXNrJztcbmltcG9ydCB7XG4gICAgQUREX1RBU0ssXG4gICAgREVMRVRFX1RBU0ssXG4gICAgSUFkZFRhc2tBY3Rpb24sXG4gICAgSURlbGV0ZUFjdGlvbixcbiAgICBJU2hvd1Rhc2tBY3Rpb24sXG4gICAgSVRvZ2dsZUNvbXBsZXRlQWN0aW9uLFxuICAgIFNIT1dfVEFTS1MsXG4gICAgVE9HR0xFX0NPTVBMRVRFX1RBU0ssXG59IGZyb20gJy4vVGFza0FjdGlvbnMnO1xuXG5leHBvcnQgY29uc3QgY3JlYXRlU2hvd1Rhc2tzQWN0aW9uID0gKHRhc2tzOiBJVGFza1tdKTogSVNob3dUYXNrQWN0aW9uID0+IHtcbiAgICBjb25zdCBkdW1teVRhc2tzOiBJVGFza1tdID0gW1xuICAgICAgICB7XG4gICAgICAgICAgICBjb21wbGV0ZTogZmFsc2UsXG4gICAgICAgICAgICBkZWFkbGluZTogTW9tZW50KCkuYWRkKDEsICdkYXknKS50b0RhdGUoKSxcbiAgICAgICAgICAgIGlkOiAnMCcsXG4gICAgICAgICAgICB0YXNrTmFtZTogJ3Rhc2swMScsXG4gICAgICAgIH0sXG4gICAgICAgIHtcbiAgICAgICAgICAgIGNvbXBsZXRlOiB0cnVlLFxuICAgICAgICAgICAgZGVhZGxpbmU6IE1vbWVudCgpLmFkZCgxLCAnZGF5JykudG9EYXRlKCksXG4gICAgICAgICAgICBpZDogJzEnLFxuICAgICAgICAgICAgdGFza05hbWU6ICd0YXNrMDInLFxuICAgICAgICB9LFxuICAgICAgICB7XG4gICAgICAgICAgICBjb21wbGV0ZTogZmFsc2UsXG4gICAgICAgICAgICBkZWFkbGluZTogTW9tZW50KCkuYWRkKC0xLCAnZGF5JykudG9EYXRlKCksXG4gICAgICAgICAgICBpZDogJzInLFxuICAgICAgICAgICAgdGFza05hbWU6ICd0YXNrMDMnLFxuICAgICAgICB9LFxuICAgICAgICB7XG4gICAgICAgICAgICBjb21wbGV0ZTogdHJ1ZSxcbiAgICAgICAgICAgIGRlYWRsaW5lOiBNb21lbnQoKS5hZGQoLTEsICdkYXknKS50b0RhdGUoKSxcbiAgICAgICAgICAgIGlkOiAnMycsXG4gICAgICAgICAgICB0YXNrTmFtZTogJ3Rhc2swNCcsXG4gICAgICAgIH0sXG4gICAgXTtcbiAgICByZXR1cm4ge1xuICAgICAgICB0YXNrczogZHVtbXlUYXNrcyxcbiAgICAgICAgdHlwZTogU0hPV19UQVNLUyxcbiAgICB9O1xufTtcblxuZXhwb3J0IGNvbnN0IGNyZWF0ZUFkZFRhc2tBY3Rpb24gPSAodGFza05hbWU6IHN0cmluZywgZGVhZGxpbmU6IERhdGUpOiBJQWRkVGFza0FjdGlvbiA9PiB7XG4gICAgcmV0dXJuIHtcbiAgICAgICAgZGVhZGxpbmUsXG4gICAgICAgIHRhc2tOYW1lLFxuICAgICAgICB0eXBlOiBBRERfVEFTSyxcbiAgICB9O1xufTtcblxuZXhwb3J0IGNvbnN0IGNyZWF0ZVRvZ2dsZUNvbXBsZXRlQWN0aW9uID0gKHRhc2tJZDogc3RyaW5nKTogSVRvZ2dsZUNvbXBsZXRlQWN0aW9uID0+IHtcbiAgICByZXR1cm4ge1xuICAgICAgICB0YXNrSWQsXG4gICAgICAgIHR5cGU6IFRPR0dMRV9DT01QTEVURV9UQVNLLFxuICAgIH07XG59O1xuXG5leHBvcnQgY29uc3QgY3JlYXRlRGVsZXRlVGFza0FjdGlvbiA9ICh0YXNrSWQ6IHN0cmluZyk6IElEZWxldGVBY3Rpb24gPT4ge1xuICAgIHJldHVybiB7XG4gICAgICAgIHRhc2tJZCxcbiAgICAgICAgdHlwZTogREVMRVRFX1RBU0ssXG4gICAgfTtcbn07XG4iXX0=
+exports.createLoadTasksAction = function (dispatch) {
+    var tasks = [];
+    TaskFileIF_1.loadTask().then(function (jsonData) {
+        tasks = jsonData.data;
+        dispatch(exports.createShowTasksAction(tasks));
+        dispatch({
+            type: TaskActions_1.TOGGLE_SHOW_SPINNER,
+        });
+    });
+    return {
+        type: TaskActions_1.TOGGLE_SHOW_SPINNER,
+    };
+};
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiVGFza0FjdGlvbkNyZWF0b3JzLmpzIiwic291cmNlUm9vdCI6Ii4vdHN4LyIsInNvdXJjZXMiOlsiYWN0aW9ucy9UYXNrQWN0aW9uQ3JlYXRvcnMudHMiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6Ijs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7O0FBQUEsaUJBMkZBOztBQXRGQSxrREFBMEQ7QUFDMUQsNkNBV3VCO0FBRVYsUUFBQSxxQkFBcUIsR0FBRyxVQUFDLEtBQWM7SUFDaEQsT0FBTztRQUNILEtBQUssT0FBQTtRQUNMLElBQUksRUFBRSx3QkFBVTtLQUNuQixDQUFDO0FBQ04sQ0FBQyxDQUFDO0FBRVcsUUFBQSxtQkFBbUIsR0FDNUIsVUFBQyxRQUFnQixFQUFFLFFBQWMsRUFBRSxLQUFvQjtJQUNuRCxDQUFDOzs7OztvQkFDUyxTQUFTLEdBQW1CO3dCQUM5QixRQUFRLFVBQUE7d0JBQ1IsUUFBUSxVQUFBO3dCQUNSLElBQUksRUFBRSxzQkFBUTtxQkFDakIsQ0FBQztvQkFDRixLQUFLLENBQUMsUUFBUSxDQUFDLFNBQVMsQ0FBQyxDQUFDO29CQUNwQixRQUFRLEdBQUcsS0FBSyxDQUFDLFFBQVEsRUFBRSxDQUFDLFFBQVEsQ0FBQztvQkFDM0MscUJBQU0sc0JBQVMsQ0FBQyxRQUFRLENBQUMsS0FBSyxDQUFDLEVBQUE7O29CQUEvQixTQUErQixDQUFDO29CQUNoQyxLQUFLLENBQUMsUUFBUSxDQUEyQjt3QkFDckMsSUFBSSxFQUFFLGlDQUFtQjtxQkFDNUIsQ0FBQyxDQUFDOzs7O1NBQ04sQ0FBQyxFQUFFLENBQUM7SUFDTCxPQUFPO1FBQ0gsSUFBSSxFQUFFLGlDQUFtQjtLQUM1QixDQUFDO0FBQ04sQ0FBQyxDQUFDO0FBRU8sUUFBQSwwQkFBMEIsR0FDbkMsVUFBQyxNQUFjLEVBQUUsS0FBb0I7SUFDakMsQ0FBQzs7Ozs7b0JBQ0csS0FBSyxDQUFDLFFBQVEsQ0FBd0I7d0JBQ2xDLE1BQU0sUUFBQTt3QkFDTixJQUFJLEVBQUUsa0NBQW9CO3FCQUM3QixDQUFDLENBQUM7b0JBQ0csUUFBUSxHQUFHLEtBQUssQ0FBQyxRQUFRLEVBQUUsQ0FBQyxRQUFRLENBQUM7b0JBQzNDLHFCQUFNLHNCQUFTLENBQUMsUUFBUSxDQUFDLEtBQUssQ0FBQyxFQUFBOztvQkFBL0IsU0FBK0IsQ0FBQztvQkFDaEMsS0FBSyxDQUFDLFFBQVEsQ0FBMkI7d0JBQ3JDLElBQUksRUFBRSxpQ0FBbUI7cUJBQzVCLENBQUMsQ0FBQzs7OztTQUNOLENBQUMsRUFBRSxDQUFDO0lBQ0wsT0FBTztRQUNILElBQUksRUFBRSxpQ0FBbUI7S0FDNUIsQ0FBQztBQUNOLENBQUMsQ0FBQztBQUVPLFFBQUEsc0JBQXNCLEdBQUcsVUFBQyxNQUFjLEVBQUUsS0FBb0I7SUFDdkUsQ0FBQzs7Ozs7b0JBQ0csS0FBSyxDQUFDLFFBQVEsQ0FBZ0IsRUFBQyxNQUFNLFFBQUEsRUFBRSxJQUFJLEVBQUUseUJBQVcsRUFBQyxDQUFDLENBQUM7b0JBQ3JELFFBQVEsR0FBRyxLQUFLLENBQUMsUUFBUSxFQUFFLENBQUMsUUFBUSxDQUFDO29CQUMzQyxxQkFBTSxzQkFBUyxDQUFDLFFBQVEsQ0FBQyxLQUFLLENBQUMsRUFBQTs7b0JBQS9CLFNBQStCLENBQUM7b0JBQ2hDLEtBQUssQ0FBQyxRQUFRLENBQTJCO3dCQUNyQyxJQUFJLEVBQUUsaUNBQW1CO3FCQUM1QixDQUFDLENBQUM7Ozs7U0FDTixDQUFDLEVBQUUsQ0FBQztJQUNMLE9BQU87UUFDSCxJQUFJLEVBQUUsaUNBQW1CO0tBQzVCLENBQUM7QUFDTixDQUFDLENBQUM7QUFFVyxRQUFBLHFCQUFxQixHQUFHLFVBQUMsUUFBa0I7SUFDcEQsSUFBSSxLQUFLLEdBQVksRUFBRSxDQUFDO0lBQ3hCLHFCQUFRLEVBQUUsQ0FBQyxJQUFJLENBQUMsVUFBQyxRQUFRO1FBQ3JCLEtBQUssR0FBRyxRQUFRLENBQUMsSUFBZSxDQUFDO1FBQ2pDLFFBQVEsQ0FBQyw2QkFBcUIsQ0FBQyxLQUFLLENBQUMsQ0FBQyxDQUFDO1FBQ3ZDLFFBQVEsQ0FBMkI7WUFDL0IsSUFBSSxFQUFFLGlDQUFtQjtTQUM1QixDQUFDLENBQUM7SUFDUCxDQUFDLENBQUMsQ0FBQztJQUNILE9BQU87UUFDSCxJQUFJLEVBQUUsaUNBQW1CO0tBQzVCLENBQUM7QUFDTixDQUFDLENBQUMiLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgTW9tZW50IGZyb20gJ21vbWVudCc7XG5pbXBvcnQgeyBEaXNwYXRjaCwgU3RvcmUgfSBmcm9tICdyZWR1eCc7XG5cbmltcG9ydCB7SVN0YXRlfSBmcm9tICcuLi9JU3RvcmUnO1xuaW1wb3J0IHtJVGFza30gZnJvbSAnLi4vc3RhdGVzL0lUYXNrJztcbmltcG9ydCB7IGxvYWRUYXNrLCBzYXZlU3RhdGUgfSBmcm9tICcuLi91dGlscy9UYXNrRmlsZUlGJztcbmltcG9ydCB7XG4gICAgQUREX1RBU0ssXG4gICAgREVMRVRFX1RBU0ssXG4gICAgSUFkZFRhc2tBY3Rpb24sXG4gICAgSURlbGV0ZUFjdGlvbixcbiAgICBJU2hvd1Rhc2tBY3Rpb24sXG4gICAgSVRvZ2dsZUNvbXBsZXRlQWN0aW9uLFxuICAgIElUb2dnbGVTaG93U3Bpbm5lckFjdGlvbixcbiAgICBTSE9XX1RBU0tTLFxuICAgIFRPR0dMRV9DT01QTEVURV9UQVNLLFxuICAgIFRPR0dMRV9TSE9XX1NQSU5ORVIsXG59IGZyb20gJy4vVGFza0FjdGlvbnMnO1xuXG5leHBvcnQgY29uc3QgY3JlYXRlU2hvd1Rhc2tzQWN0aW9uID0gKHRhc2tzOiBJVGFza1tdKTogSVNob3dUYXNrQWN0aW9uID0+IHtcbiAgICByZXR1cm4ge1xuICAgICAgICB0YXNrcyxcbiAgICAgICAgdHlwZTogU0hPV19UQVNLUyxcbiAgICB9O1xufTtcblxuZXhwb3J0IGNvbnN0IGNyZWF0ZUFkZFRhc2tBY3Rpb24gPVxuICAgICh0YXNrTmFtZTogc3RyaW5nLCBkZWFkbGluZTogRGF0ZSwgc3RvcmU6IFN0b3JlPElTdGF0ZT4pOiBJVG9nZ2xlU2hvd1NwaW5uZXJBY3Rpb24gPT4ge1xuICAgICAgICAoYXN5bmMgKCkgPT4ge1xuICAgICAgICAgICAgY29uc3QgYWRkQWN0aW9uOiBJQWRkVGFza0FjdGlvbiA9IHtcbiAgICAgICAgICAgICAgICBkZWFkbGluZSxcbiAgICAgICAgICAgICAgICB0YXNrTmFtZSxcbiAgICAgICAgICAgICAgICB0eXBlOiBBRERfVEFTSyxcbiAgICAgICAgICAgIH07XG4gICAgICAgICAgICBzdG9yZS5kaXNwYXRjaChhZGRBY3Rpb24pO1xuICAgICAgICAgICAgY29uc3QgdGFza0xpc3QgPSBzdG9yZS5nZXRTdGF0ZSgpLnRhc2tMaXN0O1xuICAgICAgICAgICAgYXdhaXQgc2F2ZVN0YXRlKHRhc2tMaXN0LnRhc2tzKTtcbiAgICAgICAgICAgIHN0b3JlLmRpc3BhdGNoPElUb2dnbGVTaG93U3Bpbm5lckFjdGlvbj4oe1xuICAgICAgICAgICAgICAgIHR5cGU6IFRPR0dMRV9TSE9XX1NQSU5ORVIsXG4gICAgICAgICAgICB9KTtcbiAgICAgICAgfSkoKTtcbiAgICAgICAgcmV0dXJuIHtcbiAgICAgICAgICAgIHR5cGU6IFRPR0dMRV9TSE9XX1NQSU5ORVIsXG4gICAgICAgIH07XG4gICAgfTtcblxuZXhwb3J0IGNvbnN0IGNyZWF0ZVRvZ2dsZUNvbXBsZXRlQWN0aW9uID1cbiAgICAodGFza0lkOiBzdHJpbmcsIHN0b3JlOiBTdG9yZTxJU3RhdGU+KTogSVRvZ2dsZVNob3dTcGlubmVyQWN0aW9uID0+IHtcbiAgICAgICAgKGFzeW5jICgpID0+IHtcbiAgICAgICAgICAgIHN0b3JlLmRpc3BhdGNoPElUb2dnbGVDb21wbGV0ZUFjdGlvbj4oe1xuICAgICAgICAgICAgICAgIHRhc2tJZCxcbiAgICAgICAgICAgICAgICB0eXBlOiBUT0dHTEVfQ09NUExFVEVfVEFTSyxcbiAgICAgICAgICAgIH0pO1xuICAgICAgICAgICAgY29uc3QgdGFza0xpc3QgPSBzdG9yZS5nZXRTdGF0ZSgpLnRhc2tMaXN0O1xuICAgICAgICAgICAgYXdhaXQgc2F2ZVN0YXRlKHRhc2tMaXN0LnRhc2tzKTtcbiAgICAgICAgICAgIHN0b3JlLmRpc3BhdGNoPElUb2dnbGVTaG93U3Bpbm5lckFjdGlvbj4oe1xuICAgICAgICAgICAgICAgIHR5cGU6IFRPR0dMRV9TSE9XX1NQSU5ORVIsXG4gICAgICAgICAgICB9KTtcbiAgICAgICAgfSkoKTtcbiAgICAgICAgcmV0dXJuIHtcbiAgICAgICAgICAgIHR5cGU6IFRPR0dMRV9TSE9XX1NQSU5ORVIsXG4gICAgICAgIH07XG4gICAgfTtcblxuZXhwb3J0IGNvbnN0IGNyZWF0ZURlbGV0ZVRhc2tBY3Rpb24gPSAodGFza0lkOiBzdHJpbmcsIHN0b3JlOiBTdG9yZTxJU3RhdGU+KTogSVRvZ2dsZVNob3dTcGlubmVyQWN0aW9uID0+IHtcbiAgICAoYXN5bmMgKCkgPT4ge1xuICAgICAgICBzdG9yZS5kaXNwYXRjaDxJRGVsZXRlQWN0aW9uPih7dGFza0lkLCB0eXBlOiBERUxFVEVfVEFTS30pO1xuICAgICAgICBjb25zdCB0YXNrTGlzdCA9IHN0b3JlLmdldFN0YXRlKCkudGFza0xpc3Q7XG4gICAgICAgIGF3YWl0IHNhdmVTdGF0ZSh0YXNrTGlzdC50YXNrcyk7XG4gICAgICAgIHN0b3JlLmRpc3BhdGNoPElUb2dnbGVTaG93U3Bpbm5lckFjdGlvbj4oe1xuICAgICAgICAgICAgdHlwZTogVE9HR0xFX1NIT1dfU1BJTk5FUixcbiAgICAgICAgfSk7XG4gICAgfSkoKTtcbiAgICByZXR1cm4ge1xuICAgICAgICB0eXBlOiBUT0dHTEVfU0hPV19TUElOTkVSLFxuICAgIH07XG59O1xuXG5leHBvcnQgY29uc3QgY3JlYXRlTG9hZFRhc2tzQWN0aW9uID0gKGRpc3BhdGNoOiBEaXNwYXRjaCk6IElUb2dnbGVTaG93U3Bpbm5lckFjdGlvbiA9PiB7XG4gICAgbGV0IHRhc2tzOiBJVGFza1tdID0gW107XG4gICAgbG9hZFRhc2soKS50aGVuKChqc29uRGF0YSkgPT4ge1xuICAgICAgICB0YXNrcyA9IGpzb25EYXRhLmRhdGEgYXMgSVRhc2tbXTtcbiAgICAgICAgZGlzcGF0Y2goY3JlYXRlU2hvd1Rhc2tzQWN0aW9uKHRhc2tzKSk7XG4gICAgICAgIGRpc3BhdGNoPElUb2dnbGVTaG93U3Bpbm5lckFjdGlvbj4oe1xuICAgICAgICAgICAgdHlwZTogVE9HR0xFX1NIT1dfU1BJTk5FUixcbiAgICAgICAgfSk7XG4gICAgfSk7XG4gICAgcmV0dXJuIHtcbiAgICAgICAgdHlwZTogVE9HR0xFX1NIT1dfU1BJTk5FUixcbiAgICB9O1xufTtcbiJdfQ==
 
 /***/ }),
 
@@ -62191,7 +65436,8 @@ exports.SHOW_TASKS = uuid_1.v4();
 exports.ADD_TASK = uuid_1.v4();
 exports.TOGGLE_COMPLETE_TASK = uuid_1.v4();
 exports.DELETE_TASK = uuid_1.v4();
-//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiVGFza0FjdGlvbnMuanMiLCJzb3VyY2VSb290IjoiLi90c3gvIiwic291cmNlcyI6WyJhY3Rpb25zL1Rhc2tBY3Rpb25zLnRzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiI7O0FBQ0EsNkJBQWdDO0FBR25CLFFBQUEsVUFBVSxHQUFHLFNBQUksRUFBRSxDQUFDO0FBTXBCLFFBQUEsUUFBUSxHQUFHLFNBQUksRUFBRSxDQUFDO0FBT2xCLFFBQUEsb0JBQW9CLEdBQUcsU0FBSSxFQUFFLENBQUM7QUFNOUIsUUFBQSxXQUFXLEdBQUcsU0FBSSxFQUFFLENBQUMiLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQge0FjdGlvbn0gZnJvbSAncmVkdXgnO1xuaW1wb3J0IHt2NCBhcyBVVUlEfSBmcm9tICd1dWlkJztcbmltcG9ydCB7SVRhc2t9IGZyb20gJy4uL3N0YXRlcy9JVGFzayc7XG5cbmV4cG9ydCBjb25zdCBTSE9XX1RBU0tTID0gVVVJRCgpO1xuXG5leHBvcnQgaW50ZXJmYWNlIElTaG93VGFza0FjdGlvbiBleHRlbmRzIEFjdGlvbiB7XG4gICAgdGFza3M6IElUYXNrW107XG59XG5cbmV4cG9ydCBjb25zdCBBRERfVEFTSyA9IFVVSUQoKTtcblxuZXhwb3J0IGludGVyZmFjZSBJQWRkVGFza0FjdGlvbiBleHRlbmRzIEFjdGlvbiB7XG4gICAgZGVhZGxpbmU6IERhdGU7XG4gICAgdGFza05hbWU6IHN0cmluZztcbn1cblxuZXhwb3J0IGNvbnN0IFRPR0dMRV9DT01QTEVURV9UQVNLID0gVVVJRCgpO1xuXG5leHBvcnQgaW50ZXJmYWNlIElUb2dnbGVDb21wbGV0ZUFjdGlvbiBleHRlbmRzIEFjdGlvbiB7XG4gICAgdGFza0lkOiBzdHJpbmc7XG59XG5cbmV4cG9ydCBjb25zdCBERUxFVEVfVEFTSyA9IFVVSUQoKTtcblxuZXhwb3J0IGludGVyZmFjZSBJRGVsZXRlQWN0aW9uIGV4dGVuZHMgQWN0aW9uIHtcbiAgICB0YXNrSWQ6IHN0cmluZztcbn1cbiJdfQ==
+exports.TOGGLE_SHOW_SPINNER = uuid_1.v4();
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiVGFza0FjdGlvbnMuanMiLCJzb3VyY2VSb290IjoiLi90c3gvIiwic291cmNlcyI6WyJhY3Rpb25zL1Rhc2tBY3Rpb25zLnRzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiI7O0FBQ0EsNkJBQWdDO0FBR25CLFFBQUEsVUFBVSxHQUFHLFNBQUksRUFBRSxDQUFDO0FBTXBCLFFBQUEsUUFBUSxHQUFHLFNBQUksRUFBRSxDQUFDO0FBT2xCLFFBQUEsb0JBQW9CLEdBQUcsU0FBSSxFQUFFLENBQUM7QUFNOUIsUUFBQSxXQUFXLEdBQUcsU0FBSSxFQUFFLENBQUM7QUFNckIsUUFBQSxtQkFBbUIsR0FBRyxTQUFJLEVBQUUsQ0FBQyIsInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7QWN0aW9ufSBmcm9tICdyZWR1eCc7XG5pbXBvcnQge3Y0IGFzIFVVSUR9IGZyb20gJ3V1aWQnO1xuaW1wb3J0IHtJVGFza30gZnJvbSAnLi4vc3RhdGVzL0lUYXNrJztcblxuZXhwb3J0IGNvbnN0IFNIT1dfVEFTS1MgPSBVVUlEKCk7XG5cbmV4cG9ydCBpbnRlcmZhY2UgSVNob3dUYXNrQWN0aW9uIGV4dGVuZHMgQWN0aW9uIHtcbiAgICB0YXNrczogSVRhc2tbXTtcbn1cblxuZXhwb3J0IGNvbnN0IEFERF9UQVNLID0gVVVJRCgpO1xuXG5leHBvcnQgaW50ZXJmYWNlIElBZGRUYXNrQWN0aW9uIGV4dGVuZHMgQWN0aW9uIHtcbiAgICBkZWFkbGluZTogRGF0ZTtcbiAgICB0YXNrTmFtZTogc3RyaW5nO1xufVxuXG5leHBvcnQgY29uc3QgVE9HR0xFX0NPTVBMRVRFX1RBU0sgPSBVVUlEKCk7XG5cbmV4cG9ydCBpbnRlcmZhY2UgSVRvZ2dsZUNvbXBsZXRlQWN0aW9uIGV4dGVuZHMgQWN0aW9uIHtcbiAgICB0YXNrSWQ6IHN0cmluZztcbn1cblxuZXhwb3J0IGNvbnN0IERFTEVURV9UQVNLID0gVVVJRCgpO1xuXG5leHBvcnQgaW50ZXJmYWNlIElEZWxldGVBY3Rpb24gZXh0ZW5kcyBBY3Rpb24ge1xuICAgIHRhc2tJZDogc3RyaW5nO1xufVxuXG5leHBvcnQgY29uc3QgVE9HR0xFX1NIT1dfU1BJTk5FUiA9IFVVSUQoKTtcblxuLy8gdHNsaW50OmRpc2FibGUtbmV4dC1saW5lOm5vLWVtcHR5LWludGVyZmFjZVxuZXhwb3J0IGludGVyZmFjZSBJVG9nZ2xlU2hvd1NwaW5uZXJBY3Rpb24gZXh0ZW5kcyBBY3Rpb24ge1xufVxuIl19
 
 /***/ }),
 
@@ -62248,7 +65494,7 @@ var AddTask = /** @class */ (function (_super) {
          * 追加ボタンを押すと、タスク一覧にタスクを追加する
          */
         _this.onClickAdd = function (e) {
-            Store_1.default.dispatch(TaskActionCreators_1.createAddTaskAction(_this.state.taskName, _this.state.deadline));
+            Store_1.default.dispatch(TaskActionCreators_1.createAddTaskAction(_this.state.taskName, _this.state.deadline, Store_1.default));
             var m = moment_1.default(new Date()).add(1, 'days');
             _this.setState({
                 deadline: m.toDate(),
@@ -62288,7 +65534,7 @@ var AddTask = /** @class */ (function (_super) {
 }(react_1.default.Component));
 exports.AddTask = AddTask;
 var templateObject_1, templateObject_2, templateObject_3, templateObject_4, templateObject_5;
-//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiQWRkVGFzay5qcyIsInNvdXJjZVJvb3QiOiIuL3RzeC8iLCJzb3VyY2VzIjpbImNvbXBvbmVudHMvQWRkVGFzay50c3giXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6Ijs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7OztBQUFBLGtEQUE0QjtBQUM1QixnREFBMEI7QUFDMUIsc0VBQTBDO0FBQzFDLHdFQUF1QztBQUN2Qyw2QkFBa0M7QUFFbEMsb0VBQW9FO0FBQ3BFLG1EQUE2QjtBQUM3Qix1REFBMEQ7QUFtQjFELGdCQUFnQjtBQUNoQixJQUFNLFNBQVMsR0FBRywyQkFBTSxDQUFDLEdBQUcscUxBQUEsa0hBTTNCLElBQUEsQ0FBQztBQUVGLElBQU0sT0FBTyxHQUFHLDJCQUFNLENBQUMsS0FBSyxzSEFBQSxtREFHM0IsSUFBQSxDQUFDO0FBRUYsSUFBTSxXQUFXLEdBQUcsMkJBQU0sQ0FBQyxDQUFDLDBGQUFBLHVCQUUzQixJQUFBLENBQUM7QUFFRixJQUFNLFdBQVcsR0FBRywyQkFBTSxDQUFDLEdBQUcsdUVBQUEsSUFDN0IsSUFBQSxDQUFDO0FBRUYsSUFBTSxTQUFTLEdBQUcsMkJBQU0sQ0FBQyxNQUFNLGlQQUFBLDBCQUNQLEVBQW9CLGtKQVEzQyxLQVJ1Qix1Q0FBb0IsQ0FRM0MsQ0FBQztBQUNGLFlBQVk7QUFFWjtJQUE2QiwyQkFBb0M7SUFFN0QsaUJBQW1CLEtBQWE7UUFBaEMsWUFDSSxrQkFBTSxLQUFLLENBQUMsU0FLZjtRQXVCRDs7V0FFRztRQUNLLGdCQUFVLEdBQUcsVUFBQyxDQUFtQjtZQUNyQyxlQUFLLENBQUMsUUFBUSxDQUFDLHdDQUFtQixDQUFDLEtBQUksQ0FBQyxLQUFLLENBQUMsUUFBUSxFQUFFLEtBQUksQ0FBQyxLQUFLLENBQUMsUUFBUSxDQUFDLENBQUMsQ0FBQztZQUM5RSxJQUFNLENBQUMsR0FBRyxnQkFBTSxDQUFDLElBQUksSUFBSSxFQUFFLENBQUMsQ0FBQyxHQUFHLENBQUMsQ0FBQyxFQUFFLE1BQU0sQ0FBQyxDQUFDO1lBQzVDLEtBQUksQ0FBQyxRQUFRLENBQUM7Z0JBQ1YsUUFBUSxFQUFFLENBQUMsQ0FBQyxNQUFNLEVBQUU7Z0JBQ3BCLFFBQVEsRUFBRSxFQUFFO2FBQ2YsQ0FBQyxDQUFDO1FBQ1AsQ0FBQyxDQUFBO1FBRU8sc0JBQWdCLEdBQUcsVUFBQyxDQUFzQztZQUM5RCxLQUFJLENBQUMsUUFBUSxDQUFDO2dCQUNWLFFBQVEsRUFBRSxDQUFDLENBQUMsTUFBTSxDQUFDLEtBQUs7YUFDM0IsQ0FBQyxDQUFDO1FBQ1AsQ0FBQyxDQUFBO1FBRU8sc0JBQWdCLEdBQUcsVUFBQyxJQUFnQjtZQUN4QyxLQUFJLENBQUMsUUFBUSxDQUFDO2dCQUNWLFFBQVEsRUFBRSxDQUFDLENBQUMsSUFBSSxDQUFDLENBQUMsQ0FBQyxJQUFJLENBQUMsQ0FBQyxDQUFDLElBQUksSUFBSSxFQUFFO2FBQ3ZDLENBQUMsQ0FBQztRQUNQLENBQUMsQ0FBQTtRQWpERyxLQUFJLENBQUMsS0FBSyxHQUFHO1lBQ1QsUUFBUSxFQUFFLEtBQUssQ0FBQyxRQUFRO1lBQ3hCLFFBQVEsRUFBRSxLQUFLLENBQUMsUUFBUTtTQUMzQixDQUFDOztJQUNOLENBQUM7SUFFTSx3QkFBTSxHQUFiO1FBQ0ksSUFBTSxJQUFJLEdBQUcsSUFBSSxJQUFJLENBQUMsSUFBSSxDQUFDLEtBQUssQ0FBQyxRQUFRLENBQUMsQ0FBQztRQUMzQyxJQUFNLFVBQVUsR0FBRyxTQUFJLEVBQUUsQ0FBQztRQUMxQixJQUFNLFVBQVUsR0FBRyxTQUFJLEVBQUUsQ0FBQztRQUMxQixPQUFPLENBQ0gsOEJBQUMsU0FBUztZQUNOLDhCQUFDLFdBQVc7Z0JBQ1IseUNBQU8sT0FBTyxFQUFFLFVBQVUsZ0JBQW1CO2dCQUM3Qyw4QkFBQyxPQUFPLElBQUMsRUFBRSxFQUFFLFVBQVUsRUFBRSxJQUFJLEVBQUMsTUFBTSxFQUFDLEtBQUssRUFBRSxJQUFJLENBQUMsS0FBSyxDQUFDLFFBQVEsRUFDM0QsUUFBUSxFQUFFLElBQUksQ0FBQyxnQkFBZ0IsR0FBSSxDQUM3QjtZQUNkLDhCQUFDLFdBQVc7Z0JBQ1IseUNBQU8sT0FBTyxFQUFFLFVBQVUsZ0JBQW1CO2dCQUM3Qyw4QkFBQywwQkFBVSxJQUFDLFFBQVEsRUFBRSxJQUFJLEVBQUUsY0FBYyxFQUFFLElBQUksRUFDNUMsVUFBVSxFQUFDLGtCQUFrQixFQUFDLFFBQVEsRUFBRSxJQUFJLENBQUMsZ0JBQWdCLEdBQUksQ0FDM0Q7WUFDZCw4QkFBQyxTQUFTLElBQUMsT0FBTyxFQUFFLElBQUksQ0FBQyxVQUFVLFFBQWUsQ0FDMUMsQ0FDZixDQUFDO0lBQ04sQ0FBQztJQXlCTCxjQUFDO0FBQUQsQ0FBQyxBQXRERCxDQUE2QixlQUFLLENBQUMsU0FBUyxHQXNEM0M7QUF0RFksMEJBQU8iLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgTW9tZW50IGZyb20gJ21vbWVudCc7XG5pbXBvcnQgUmVhY3QgZnJvbSAncmVhY3QnO1xuaW1wb3J0IERhdGVQaWNrZXIgZnJvbSAncmVhY3QtZGF0ZXBpY2tlcic7XG5pbXBvcnQgU3R5bGVkIGZyb20gJ3N0eWxlZC1jb21wb25lbnRzJztcbmltcG9ydCB7IHY0IGFzIFVVSUQgfSBmcm9tICd1dWlkJztcblxuaW1wb3J0IHsgY3JlYXRlQWRkVGFza0FjdGlvbiB9IGZyb20gJy4uL2FjdGlvbnMvVGFza0FjdGlvbkNyZWF0b3JzJztcbmltcG9ydCBzdG9yZSBmcm9tICcuLi9TdG9yZSc7XG5pbXBvcnQgeyAkQ09MT1JfU0VDT05EQVJZXzFfMyB9IGZyb20gJy4vRm91bmRhdGlvblN0eWxlcyc7XG5cbi8qKlxuICog44Kz44Oz44Od44O844ON44Oz44OIIOODl+ODreODkeODhuOCo1xuICpcbiAqIOOBk+OBk+OBp+OBr+OAgeWIneacn+WApOOBqOOBl+OBpuaJseOBhlxuICovXG5pbnRlcmZhY2UgSVByb3BzIHtcbiAgICAvKiog44K/44K544Kv5ZCNICovXG4gICAgdGFza05hbWU6IHN0cmluZztcbiAgICAvKiog5pyf6ZmQICovXG4gICAgZGVhZGxpbmU6IERhdGU7XG59XG5cbmludGVyZmFjZSBJTG9jYWxTdGF0ZSB7XG4gICAgdGFza05hbWU6IHN0cmluZztcbiAgICBkZWFkbGluZTogRGF0ZTtcbn1cblxuLy8jcmVnaW9uIHN0eWxlZFxuY29uc3QgQ29udGFpbmVyID0gU3R5bGVkLmRpdmBcbiAgICBhbGlnbi1pdGVtczogY2VudGVyO1xuICAgIGRpc3BsYXk6IGZsZXg7XG4gICAgZmxleC1kaXJlY3Rpb246IHJvdztcbiAgICBtYXJnaW46IDFlbSAwO1xuICAgIHdpZHRoOiAxMDAlO1xuYDtcblxuY29uc3QgVGV4dEJveCA9IFN0eWxlZC5pbnB1dGBcbiAgICBib3gtc2l6aW5nOiBib3JkZXItYm94O1xuICAgIHdpZHRoOiAxMDAlO1xuYDtcblxuY29uc3QgVGFza05hbWVCb3ggPSBTdHlsZWQucGBcbiAgICBmbGV4LWdyb3c6IDE7XG5gO1xuXG5jb25zdCBEZWFkbGluZUJveCA9IFN0eWxlZC5kaXZgXG5gO1xuXG5jb25zdCBBZGRCdXR0b24gPSBTdHlsZWQuYnV0dG9uYFxuICAgIGJhY2tncm91bmQtY29sb3I6ICR7JENPTE9SX1NFQ09OREFSWV8xXzN9O1xuICAgIGJvcmRlci1yYWRpdXM6IDUwJTtcbiAgICBjb2xvcjogd2hpdGU7XG4gICAgZGlzcGxheTogYmxvY2s7XG4gICAgZm9udC1zaXplOiAxNTAlO1xuICAgIGhlaWdodDogNDBweDtcbiAgICBwYWRkaW5nOiAwO1xuICAgIHdpZHRoOiA0MHB4O1xuYDtcbi8vI2VuZHJlZ2lvblxuXG5leHBvcnQgY2xhc3MgQWRkVGFzayBleHRlbmRzIFJlYWN0LkNvbXBvbmVudDxJUHJvcHMsIElMb2NhbFN0YXRlPiB7XG5cbiAgICBwdWJsaWMgY29uc3RydWN0b3IocHJvcHM6IElQcm9wcykge1xuICAgICAgICBzdXBlcihwcm9wcyk7XG4gICAgICAgIHRoaXMuc3RhdGUgPSB7XG4gICAgICAgICAgICBkZWFkbGluZTogcHJvcHMuZGVhZGxpbmUsXG4gICAgICAgICAgICB0YXNrTmFtZTogcHJvcHMudGFza05hbWUsXG4gICAgICAgIH07XG4gICAgfVxuXG4gICAgcHVibGljIHJlbmRlcigpIHtcbiAgICAgICAgY29uc3QgZGF0ZSA9IG5ldyBEYXRlKHRoaXMuc3RhdGUuZGVhZGxpbmUpO1xuICAgICAgICBjb25zdCB0YXNrTmFtZUlkID0gVVVJRCgpO1xuICAgICAgICBjb25zdCBkZWFkbGluZUlkID0gVVVJRCgpO1xuICAgICAgICByZXR1cm4gKFxuICAgICAgICAgICAgPENvbnRhaW5lcj5cbiAgICAgICAgICAgICAgICA8VGFza05hbWVCb3g+XG4gICAgICAgICAgICAgICAgICAgIDxsYWJlbCBodG1sRm9yPXt0YXNrTmFtZUlkfT50YXNrIG5hbWU8L2xhYmVsPlxuICAgICAgICAgICAgICAgICAgICA8VGV4dEJveCBpZD17dGFza05hbWVJZH0gdHlwZT1cInRleHRcIiB2YWx1ZT17dGhpcy5zdGF0ZS50YXNrTmFtZX1cbiAgICAgICAgICAgICAgICAgICAgICAgIG9uQ2hhbmdlPXt0aGlzLm9uQ2hhbmdlVGFza05hbWV9IC8+XG4gICAgICAgICAgICAgICAgPC9UYXNrTmFtZUJveD5cbiAgICAgICAgICAgICAgICA8RGVhZGxpbmVCb3g+XG4gICAgICAgICAgICAgICAgICAgIDxsYWJlbCBodG1sRm9yPXtkZWFkbGluZUlkfT5kZWFkIGxpbmU8L2xhYmVsPlxuICAgICAgICAgICAgICAgICAgICA8RGF0ZVBpY2tlciBzZWxlY3RlZD17ZGF0ZX0gc2hvd1RpbWVTZWxlY3Q9e3RydWV9XG4gICAgICAgICAgICAgICAgICAgICAgICBkYXRlRm9ybWF0PVwiWVlZWS1NTS1ERCBISDptbVwiIG9uQ2hhbmdlPXt0aGlzLm9uQ2hhbmdlRGVhZExpbmV9IC8+XG4gICAgICAgICAgICAgICAgPC9EZWFkbGluZUJveD5cbiAgICAgICAgICAgICAgICA8QWRkQnV0dG9uIG9uQ2xpY2s9e3RoaXMub25DbGlja0FkZH0+KzwvQWRkQnV0dG9uPlxuICAgICAgICAgICAgPC9Db250YWluZXI+XG4gICAgICAgICk7XG4gICAgfVxuXG4gICAgLyoqXG4gICAgICog6L+95Yqg44Oc44K/44Oz44KS5oq844GZ44Go44CB44K/44K544Kv5LiA6Kan44Gr44K/44K544Kv44KS6L+95Yqg44GZ44KLXG4gICAgICovXG4gICAgcHJpdmF0ZSBvbkNsaWNrQWRkID0gKGU6IFJlYWN0Lk1vdXNlRXZlbnQpID0+IHtcbiAgICAgICAgc3RvcmUuZGlzcGF0Y2goY3JlYXRlQWRkVGFza0FjdGlvbih0aGlzLnN0YXRlLnRhc2tOYW1lLCB0aGlzLnN0YXRlLmRlYWRsaW5lKSk7XG4gICAgICAgIGNvbnN0IG0gPSBNb21lbnQobmV3IERhdGUoKSkuYWRkKDEsICdkYXlzJyk7XG4gICAgICAgIHRoaXMuc2V0U3RhdGUoe1xuICAgICAgICAgICAgZGVhZGxpbmU6IG0udG9EYXRlKCksXG4gICAgICAgICAgICB0YXNrTmFtZTogJycsXG4gICAgICAgIH0pO1xuICAgIH1cblxuICAgIHByaXZhdGUgb25DaGFuZ2VUYXNrTmFtZSA9IChlOiBSZWFjdC5DaGFuZ2VFdmVudDxIVE1MSW5wdXRFbGVtZW50PikgPT4ge1xuICAgICAgICB0aGlzLnNldFN0YXRlKHtcbiAgICAgICAgICAgIHRhc2tOYW1lOiBlLnRhcmdldC52YWx1ZSxcbiAgICAgICAgfSk7XG4gICAgfVxuXG4gICAgcHJpdmF0ZSBvbkNoYW5nZURlYWRMaW5lID0gKGRhdGU6IERhdGV8IG51bGwpID0+IHtcbiAgICAgICAgdGhpcy5zZXRTdGF0ZSh7XG4gICAgICAgICAgICBkZWFkbGluZTogISFkYXRlID8gZGF0ZSA6IG5ldyBEYXRlKCksXG4gICAgICAgIH0pO1xuICAgIH1cbn1cbiJdfQ==
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiQWRkVGFzay5qcyIsInNvdXJjZVJvb3QiOiIuL3RzeC8iLCJzb3VyY2VzIjpbImNvbXBvbmVudHMvQWRkVGFzay50c3giXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6Ijs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7OztBQUFBLGtEQUE0QjtBQUM1QixnREFBMEI7QUFDMUIsc0VBQTBDO0FBQzFDLHdFQUF1QztBQUN2Qyw2QkFBa0M7QUFFbEMsb0VBQW9FO0FBQ3BFLG1EQUE2QjtBQUM3Qix1REFBMEQ7QUFtQjFELGdCQUFnQjtBQUNoQixJQUFNLFNBQVMsR0FBRywyQkFBTSxDQUFDLEdBQUcscUxBQUEsa0hBTTNCLElBQUEsQ0FBQztBQUVGLElBQU0sT0FBTyxHQUFHLDJCQUFNLENBQUMsS0FBSyxzSEFBQSxtREFHM0IsSUFBQSxDQUFDO0FBRUYsSUFBTSxXQUFXLEdBQUcsMkJBQU0sQ0FBQyxDQUFDLDBGQUFBLHVCQUUzQixJQUFBLENBQUM7QUFFRixJQUFNLFdBQVcsR0FBRywyQkFBTSxDQUFDLEdBQUcsdUVBQUEsSUFDN0IsSUFBQSxDQUFDO0FBRUYsSUFBTSxTQUFTLEdBQUcsMkJBQU0sQ0FBQyxNQUFNLGlQQUFBLDBCQUNQLEVBQW9CLGtKQVEzQyxLQVJ1Qix1Q0FBb0IsQ0FRM0MsQ0FBQztBQUNGLFlBQVk7QUFFWjtJQUE2QiwyQkFBb0M7SUFFN0QsaUJBQW1CLEtBQWE7UUFBaEMsWUFDSSxrQkFBTSxLQUFLLENBQUMsU0FLZjtRQXVCRDs7V0FFRztRQUNLLGdCQUFVLEdBQUcsVUFBQyxDQUFtQjtZQUNyQyxlQUFLLENBQUMsUUFBUSxDQUFDLHdDQUFtQixDQUFDLEtBQUksQ0FBQyxLQUFLLENBQUMsUUFBUSxFQUFFLEtBQUksQ0FBQyxLQUFLLENBQUMsUUFBUSxFQUFFLGVBQUssQ0FBQyxDQUFDLENBQUM7WUFDckYsSUFBTSxDQUFDLEdBQUcsZ0JBQU0sQ0FBQyxJQUFJLElBQUksRUFBRSxDQUFDLENBQUMsR0FBRyxDQUFDLENBQUMsRUFBRSxNQUFNLENBQUMsQ0FBQztZQUM1QyxLQUFJLENBQUMsUUFBUSxDQUFDO2dCQUNWLFFBQVEsRUFBRSxDQUFDLENBQUMsTUFBTSxFQUFFO2dCQUNwQixRQUFRLEVBQUUsRUFBRTthQUNmLENBQUMsQ0FBQztRQUNQLENBQUMsQ0FBQTtRQUVPLHNCQUFnQixHQUFHLFVBQUMsQ0FBc0M7WUFDOUQsS0FBSSxDQUFDLFFBQVEsQ0FBQztnQkFDVixRQUFRLEVBQUUsQ0FBQyxDQUFDLE1BQU0sQ0FBQyxLQUFLO2FBQzNCLENBQUMsQ0FBQztRQUNQLENBQUMsQ0FBQTtRQUVPLHNCQUFnQixHQUFHLFVBQUMsSUFBZ0I7WUFDeEMsS0FBSSxDQUFDLFFBQVEsQ0FBQztnQkFDVixRQUFRLEVBQUUsQ0FBQyxDQUFDLElBQUksQ0FBQyxDQUFDLENBQUMsSUFBSSxDQUFDLENBQUMsQ0FBQyxJQUFJLElBQUksRUFBRTthQUN2QyxDQUFDLENBQUM7UUFDUCxDQUFDLENBQUE7UUFqREcsS0FBSSxDQUFDLEtBQUssR0FBRztZQUNULFFBQVEsRUFBRSxLQUFLLENBQUMsUUFBUTtZQUN4QixRQUFRLEVBQUUsS0FBSyxDQUFDLFFBQVE7U0FDM0IsQ0FBQzs7SUFDTixDQUFDO0lBRU0sd0JBQU0sR0FBYjtRQUNJLElBQU0sSUFBSSxHQUFHLElBQUksSUFBSSxDQUFDLElBQUksQ0FBQyxLQUFLLENBQUMsUUFBUSxDQUFDLENBQUM7UUFDM0MsSUFBTSxVQUFVLEdBQUcsU0FBSSxFQUFFLENBQUM7UUFDMUIsSUFBTSxVQUFVLEdBQUcsU0FBSSxFQUFFLENBQUM7UUFDMUIsT0FBTyxDQUNILDhCQUFDLFNBQVM7WUFDTiw4QkFBQyxXQUFXO2dCQUNSLHlDQUFPLE9BQU8sRUFBRSxVQUFVLGdCQUFtQjtnQkFDN0MsOEJBQUMsT0FBTyxJQUFDLEVBQUUsRUFBRSxVQUFVLEVBQUUsSUFBSSxFQUFDLE1BQU0sRUFBQyxLQUFLLEVBQUUsSUFBSSxDQUFDLEtBQUssQ0FBQyxRQUFRLEVBQzNELFFBQVEsRUFBRSxJQUFJLENBQUMsZ0JBQWdCLEdBQUksQ0FDN0I7WUFDZCw4QkFBQyxXQUFXO2dCQUNSLHlDQUFPLE9BQU8sRUFBRSxVQUFVLGdCQUFtQjtnQkFDN0MsOEJBQUMsMEJBQVUsSUFBQyxRQUFRLEVBQUUsSUFBSSxFQUFFLGNBQWMsRUFBRSxJQUFJLEVBQzVDLFVBQVUsRUFBQyxrQkFBa0IsRUFBQyxRQUFRLEVBQUUsSUFBSSxDQUFDLGdCQUFnQixHQUFJLENBQzNEO1lBQ2QsOEJBQUMsU0FBUyxJQUFDLE9BQU8sRUFBRSxJQUFJLENBQUMsVUFBVSxRQUFlLENBQzFDLENBQ2YsQ0FBQztJQUNOLENBQUM7SUF5QkwsY0FBQztBQUFELENBQUMsQUF0REQsQ0FBNkIsZUFBSyxDQUFDLFNBQVMsR0FzRDNDO0FBdERZLDBCQUFPIiwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IE1vbWVudCBmcm9tICdtb21lbnQnO1xuaW1wb3J0IFJlYWN0IGZyb20gJ3JlYWN0JztcbmltcG9ydCBEYXRlUGlja2VyIGZyb20gJ3JlYWN0LWRhdGVwaWNrZXInO1xuaW1wb3J0IFN0eWxlZCBmcm9tICdzdHlsZWQtY29tcG9uZW50cyc7XG5pbXBvcnQgeyB2NCBhcyBVVUlEIH0gZnJvbSAndXVpZCc7XG5cbmltcG9ydCB7IGNyZWF0ZUFkZFRhc2tBY3Rpb24gfSBmcm9tICcuLi9hY3Rpb25zL1Rhc2tBY3Rpb25DcmVhdG9ycyc7XG5pbXBvcnQgc3RvcmUgZnJvbSAnLi4vU3RvcmUnO1xuaW1wb3J0IHsgJENPTE9SX1NFQ09OREFSWV8xXzMgfSBmcm9tICcuL0ZvdW5kYXRpb25TdHlsZXMnO1xuXG4vKipcbiAqIOOCs+ODs+ODneODvOODjeODs+ODiCDjg5fjg63jg5Hjg4bjgqNcbiAqXG4gKiDjgZPjgZPjgafjga/jgIHliJ3mnJ/lgKTjgajjgZfjgabmibHjgYZcbiAqL1xuaW50ZXJmYWNlIElQcm9wcyB7XG4gICAgLyoqIOOCv+OCueOCr+WQjSAqL1xuICAgIHRhc2tOYW1lOiBzdHJpbmc7XG4gICAgLyoqIOacn+mZkCAqL1xuICAgIGRlYWRsaW5lOiBEYXRlO1xufVxuXG5pbnRlcmZhY2UgSUxvY2FsU3RhdGUge1xuICAgIHRhc2tOYW1lOiBzdHJpbmc7XG4gICAgZGVhZGxpbmU6IERhdGU7XG59XG5cbi8vI3JlZ2lvbiBzdHlsZWRcbmNvbnN0IENvbnRhaW5lciA9IFN0eWxlZC5kaXZgXG4gICAgYWxpZ24taXRlbXM6IGNlbnRlcjtcbiAgICBkaXNwbGF5OiBmbGV4O1xuICAgIGZsZXgtZGlyZWN0aW9uOiByb3c7XG4gICAgbWFyZ2luOiAxZW0gMDtcbiAgICB3aWR0aDogMTAwJTtcbmA7XG5cbmNvbnN0IFRleHRCb3ggPSBTdHlsZWQuaW5wdXRgXG4gICAgYm94LXNpemluZzogYm9yZGVyLWJveDtcbiAgICB3aWR0aDogMTAwJTtcbmA7XG5cbmNvbnN0IFRhc2tOYW1lQm94ID0gU3R5bGVkLnBgXG4gICAgZmxleC1ncm93OiAxO1xuYDtcblxuY29uc3QgRGVhZGxpbmVCb3ggPSBTdHlsZWQuZGl2YFxuYDtcblxuY29uc3QgQWRkQnV0dG9uID0gU3R5bGVkLmJ1dHRvbmBcbiAgICBiYWNrZ3JvdW5kLWNvbG9yOiAkeyRDT0xPUl9TRUNPTkRBUllfMV8zfTtcbiAgICBib3JkZXItcmFkaXVzOiA1MCU7XG4gICAgY29sb3I6IHdoaXRlO1xuICAgIGRpc3BsYXk6IGJsb2NrO1xuICAgIGZvbnQtc2l6ZTogMTUwJTtcbiAgICBoZWlnaHQ6IDQwcHg7XG4gICAgcGFkZGluZzogMDtcbiAgICB3aWR0aDogNDBweDtcbmA7XG4vLyNlbmRyZWdpb25cblxuZXhwb3J0IGNsYXNzIEFkZFRhc2sgZXh0ZW5kcyBSZWFjdC5Db21wb25lbnQ8SVByb3BzLCBJTG9jYWxTdGF0ZT4ge1xuXG4gICAgcHVibGljIGNvbnN0cnVjdG9yKHByb3BzOiBJUHJvcHMpIHtcbiAgICAgICAgc3VwZXIocHJvcHMpO1xuICAgICAgICB0aGlzLnN0YXRlID0ge1xuICAgICAgICAgICAgZGVhZGxpbmU6IHByb3BzLmRlYWRsaW5lLFxuICAgICAgICAgICAgdGFza05hbWU6IHByb3BzLnRhc2tOYW1lLFxuICAgICAgICB9O1xuICAgIH1cblxuICAgIHB1YmxpYyByZW5kZXIoKSB7XG4gICAgICAgIGNvbnN0IGRhdGUgPSBuZXcgRGF0ZSh0aGlzLnN0YXRlLmRlYWRsaW5lKTtcbiAgICAgICAgY29uc3QgdGFza05hbWVJZCA9IFVVSUQoKTtcbiAgICAgICAgY29uc3QgZGVhZGxpbmVJZCA9IFVVSUQoKTtcbiAgICAgICAgcmV0dXJuIChcbiAgICAgICAgICAgIDxDb250YWluZXI+XG4gICAgICAgICAgICAgICAgPFRhc2tOYW1lQm94PlxuICAgICAgICAgICAgICAgICAgICA8bGFiZWwgaHRtbEZvcj17dGFza05hbWVJZH0+dGFzayBuYW1lPC9sYWJlbD5cbiAgICAgICAgICAgICAgICAgICAgPFRleHRCb3ggaWQ9e3Rhc2tOYW1lSWR9IHR5cGU9XCJ0ZXh0XCIgdmFsdWU9e3RoaXMuc3RhdGUudGFza05hbWV9XG4gICAgICAgICAgICAgICAgICAgICAgICBvbkNoYW5nZT17dGhpcy5vbkNoYW5nZVRhc2tOYW1lfSAvPlxuICAgICAgICAgICAgICAgIDwvVGFza05hbWVCb3g+XG4gICAgICAgICAgICAgICAgPERlYWRsaW5lQm94PlxuICAgICAgICAgICAgICAgICAgICA8bGFiZWwgaHRtbEZvcj17ZGVhZGxpbmVJZH0+ZGVhZCBsaW5lPC9sYWJlbD5cbiAgICAgICAgICAgICAgICAgICAgPERhdGVQaWNrZXIgc2VsZWN0ZWQ9e2RhdGV9IHNob3dUaW1lU2VsZWN0PXt0cnVlfVxuICAgICAgICAgICAgICAgICAgICAgICAgZGF0ZUZvcm1hdD1cIllZWVktTU0tREQgSEg6bW1cIiBvbkNoYW5nZT17dGhpcy5vbkNoYW5nZURlYWRMaW5lfSAvPlxuICAgICAgICAgICAgICAgIDwvRGVhZGxpbmVCb3g+XG4gICAgICAgICAgICAgICAgPEFkZEJ1dHRvbiBvbkNsaWNrPXt0aGlzLm9uQ2xpY2tBZGR9Pis8L0FkZEJ1dHRvbj5cbiAgICAgICAgICAgIDwvQ29udGFpbmVyPlxuICAgICAgICApO1xuICAgIH1cblxuICAgIC8qKlxuICAgICAqIOi/veWKoOODnOOCv+ODs+OCkuaKvOOBmeOBqOOAgeOCv+OCueOCr+S4gOimp+OBq+OCv+OCueOCr+OCkui/veWKoOOBmeOCi1xuICAgICAqL1xuICAgIHByaXZhdGUgb25DbGlja0FkZCA9IChlOiBSZWFjdC5Nb3VzZUV2ZW50KSA9PiB7XG4gICAgICAgIHN0b3JlLmRpc3BhdGNoKGNyZWF0ZUFkZFRhc2tBY3Rpb24odGhpcy5zdGF0ZS50YXNrTmFtZSwgdGhpcy5zdGF0ZS5kZWFkbGluZSwgc3RvcmUpKTtcbiAgICAgICAgY29uc3QgbSA9IE1vbWVudChuZXcgRGF0ZSgpKS5hZGQoMSwgJ2RheXMnKTtcbiAgICAgICAgdGhpcy5zZXRTdGF0ZSh7XG4gICAgICAgICAgICBkZWFkbGluZTogbS50b0RhdGUoKSxcbiAgICAgICAgICAgIHRhc2tOYW1lOiAnJyxcbiAgICAgICAgfSk7XG4gICAgfVxuXG4gICAgcHJpdmF0ZSBvbkNoYW5nZVRhc2tOYW1lID0gKGU6IFJlYWN0LkNoYW5nZUV2ZW50PEhUTUxJbnB1dEVsZW1lbnQ+KSA9PiB7XG4gICAgICAgIHRoaXMuc2V0U3RhdGUoe1xuICAgICAgICAgICAgdGFza05hbWU6IGUudGFyZ2V0LnZhbHVlLFxuICAgICAgICB9KTtcbiAgICB9XG5cbiAgICBwcml2YXRlIG9uQ2hhbmdlRGVhZExpbmUgPSAoZGF0ZTogRGF0ZXwgbnVsbCkgPT4ge1xuICAgICAgICB0aGlzLnNldFN0YXRlKHtcbiAgICAgICAgICAgIGRlYWRsaW5lOiAhIWRhdGUgPyBkYXRlIDogbmV3IERhdGUoKSxcbiAgICAgICAgfSk7XG4gICAgfVxufVxuIl19
 
 /***/ }),
 
@@ -62341,6 +65587,69 @@ var templateObject_1;
 
 /***/ }),
 
+/***/ "./ts/components/Loading.tsx":
+/*!***********************************!*\
+  !*** ./ts/components/Loading.tsx ***!
+  \***********************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var __makeTemplateObject = (this && this.__makeTemplateObject) || function (cooked, raw) {
+    if (Object.defineProperty) { Object.defineProperty(cooked, "raw", { value: raw }); } else { cooked.raw = raw; }
+    return cooked;
+};
+var __extends = (this && this.__extends) || (function () {
+    var extendStatics = function (d, b) {
+        extendStatics = Object.setPrototypeOf ||
+            ({ __proto__: [] } instanceof Array && function (d, b) { d.__proto__ = b; }) ||
+            function (d, b) { for (var p in b) if (b.hasOwnProperty(p)) d[p] = b[p]; };
+        return extendStatics(d, b);
+    };
+    return function (d, b) {
+        extendStatics(d, b);
+        function __() { this.constructor = d; }
+        d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
+    };
+})();
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (Object.hasOwnProperty.call(mod, k)) result[k] = mod[k];
+    result["default"] = mod;
+    return result;
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+var react_1 = __importStar(__webpack_require__(/*! react */ "./node_modules/react/index.js"));
+var styled_components_1 = __importStar(__webpack_require__(/*! styled-components */ "./node_modules/styled-components/dist/styled-components.esm.js"));
+var FoundationStyles_1 = __webpack_require__(/*! ./FoundationStyles */ "./ts/components/FoundationStyles.ts");
+var BG = styled_components_1.default.div(templateObject_1 || (templateObject_1 = __makeTemplateObject(["\n    background: #666;\n    height: 100%;\n    left: 0;\n    opacity: 0.5;\n    position: absolute;\n    top: 0;\n    width: 100%;\n"], ["\n    background: #666;\n    height: 100%;\n    left: 0;\n    opacity: 0.5;\n    position: absolute;\n    top: 0;\n    width: 100%;\n"])));
+var RoundAnimate = styled_components_1.keyframes(templateObject_2 || (templateObject_2 = __makeTemplateObject(["\n    0% {\n        transform: rotate(0deg);\n    }\n    100% {\n        transform: rotate(360deg);\n    }\n"], ["\n    0% {\n        transform: rotate(0deg);\n    }\n    100% {\n        transform: rotate(360deg);\n    }\n"])));
+var SpinnerBox = styled_components_1.default.div(templateObject_3 || (templateObject_3 = __makeTemplateObject(["\n    align-items: center;\n    display: flex;\n    height: 100%;\n    left: 0;\n    position: absolute;\n    top: 0;\n    width: 100%;\n"], ["\n    align-items: center;\n    display: flex;\n    height: 100%;\n    left: 0;\n    position: absolute;\n    top: 0;\n    width: 100%;\n"])));
+var Spinner = styled_components_1.default.div(templateObject_4 || (templateObject_4 = __makeTemplateObject(["\n    animation: ", " 1.1s infinite linear;\n    border-bottom: 1.1em solid ", ";\n    border-left: 1.1em solid ", ";\n    border-radius: 50%;\n    border-right: 1.1em solid ", ";\n    border-top: 1.1em solid ", ";\n    font-size: 10px;\n    height: 10em;\n    margin: 60px auto;\n    position: relative;\n    transform: translateZ(0);\n    width: 10em;\n    &:after {\n        border-radius: 50%;\n        width: 10em;\n        height: 10em;\n    }\n"], ["\n    animation: ", " 1.1s infinite linear;\n    border-bottom: 1.1em solid ", ";\n    border-left: 1.1em solid ", ";\n    border-radius: 50%;\n    border-right: 1.1em solid ", ";\n    border-top: 1.1em solid ", ";\n    font-size: 10px;\n    height: 10em;\n    margin: 60px auto;\n    position: relative;\n    transform: translateZ(0);\n    width: 10em;\n    &:after {\n        border-radius: 50%;\n        width: 10em;\n        height: 10em;\n    }\n"])), RoundAnimate, FoundationStyles_1.$COLOR_PRIMARY_1, FoundationStyles_1.$COLOR_PRIMARY_0, FoundationStyles_1.$COLOR_PRIMARY_1, FoundationStyles_1.$COLOR_PRIMARY_1);
+var Loading = /** @class */ (function (_super) {
+    __extends(Loading, _super);
+    function Loading() {
+        return _super !== null && _super.apply(this, arguments) || this;
+    }
+    Loading.prototype.render = function () {
+        if (!this.props.shown) {
+            return null;
+        }
+        return (react_1.default.createElement("div", null,
+            react_1.default.createElement(BG, null),
+            react_1.default.createElement(SpinnerBox, null,
+                react_1.default.createElement(Spinner, null))));
+    };
+    return Loading;
+}(react_1.Component));
+exports.Loading = Loading;
+var templateObject_1, templateObject_2, templateObject_3, templateObject_4;
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiTG9hZGluZy5qcyIsInNvdXJjZVJvb3QiOiIuL3RzeC8iLCJzb3VyY2VzIjpbImNvbXBvbmVudHMvTG9hZGluZy50c3giXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6Ijs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7QUFBQSw2Q0FBeUM7QUFDekMscUVBQXNEO0FBQ3RELHVEQUF3RTtBQU14RSxJQUFNLEVBQUUsR0FBRywyQkFBTSxDQUFDLEdBQUcsME1BQUEsdUlBUXBCLElBQUEsQ0FBQztBQUVGLElBQU0sWUFBWSxHQUFHLDZCQUFTLGlMQUFBLDhHQU83QixJQUFBLENBQUM7QUFDRixJQUFNLFVBQVUsR0FBRywyQkFBTSxDQUFDLEdBQUcsOE1BQUEsMklBUTVCLElBQUEsQ0FBQztBQUNGLElBQU0sT0FBTyxHQUFHLDJCQUFNLENBQUMsR0FBRyx3Z0JBQUEsbUJBQ1QsRUFBWSx5REFDSSxFQUFnQixrQ0FDbEIsRUFBZ0IsNERBRWYsRUFBZ0IsaUNBQ2xCLEVBQWdCLGdQQVk3QyxLQWpCZ0IsWUFBWSxFQUNJLG1DQUFnQixFQUNsQixtQ0FBZ0IsRUFFZixtQ0FBZ0IsRUFDbEIsbUNBQWdCLENBWTdDLENBQUM7QUFFRjtJQUE2QiwyQkFBaUI7SUFBOUM7O0lBY0EsQ0FBQztJQWJVLHdCQUFNLEdBQWI7UUFDSSxJQUFJLENBQUMsSUFBSSxDQUFDLEtBQUssQ0FBQyxLQUFLLEVBQUU7WUFDbkIsT0FBTyxJQUFJLENBQUM7U0FDZjtRQUNELE9BQU8sQ0FDSDtZQUNJLDhCQUFDLEVBQUUsT0FBRztZQUNOLDhCQUFDLFVBQVU7Z0JBQ1AsOEJBQUMsT0FBTyxPQUFHLENBQ0YsQ0FDWCxDQUNULENBQUM7SUFDTixDQUFDO0lBQ0wsY0FBQztBQUFELENBQUMsQUFkRCxDQUE2QixpQkFBUyxHQWNyQztBQWRZLDBCQUFPIiwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IFJlYWN0LCB7IENvbXBvbmVudCB9IGZyb20gJ3JlYWN0JztcbmltcG9ydCBTdHlsZWQsIHsga2V5ZnJhbWVzIH0gZnJvbSAnc3R5bGVkLWNvbXBvbmVudHMnO1xuaW1wb3J0IHsgJENPTE9SX1BSSU1BUllfMCwgJENPTE9SX1BSSU1BUllfMSB9IGZyb20gJy4vRm91bmRhdGlvblN0eWxlcyc7XG5cbmludGVyZmFjZSBJUHJvcHMge1xuICAgIHNob3duOiBib29sZWFuO1xufVxuXG5jb25zdCBCRyA9IFN0eWxlZC5kaXZgXG4gICAgYmFja2dyb3VuZDogIzY2NjtcbiAgICBoZWlnaHQ6IDEwMCU7XG4gICAgbGVmdDogMDtcbiAgICBvcGFjaXR5OiAwLjU7XG4gICAgcG9zaXRpb246IGFic29sdXRlO1xuICAgIHRvcDogMDtcbiAgICB3aWR0aDogMTAwJTtcbmA7XG5cbmNvbnN0IFJvdW5kQW5pbWF0ZSA9IGtleWZyYW1lc2BcbiAgICAwJSB7XG4gICAgICAgIHRyYW5zZm9ybTogcm90YXRlKDBkZWcpO1xuICAgIH1cbiAgICAxMDAlIHtcbiAgICAgICAgdHJhbnNmb3JtOiByb3RhdGUoMzYwZGVnKTtcbiAgICB9XG5gO1xuY29uc3QgU3Bpbm5lckJveCA9IFN0eWxlZC5kaXZgXG4gICAgYWxpZ24taXRlbXM6IGNlbnRlcjtcbiAgICBkaXNwbGF5OiBmbGV4O1xuICAgIGhlaWdodDogMTAwJTtcbiAgICBsZWZ0OiAwO1xuICAgIHBvc2l0aW9uOiBhYnNvbHV0ZTtcbiAgICB0b3A6IDA7XG4gICAgd2lkdGg6IDEwMCU7XG5gO1xuY29uc3QgU3Bpbm5lciA9IFN0eWxlZC5kaXZgXG4gICAgYW5pbWF0aW9uOiAke1JvdW5kQW5pbWF0ZX0gMS4xcyBpbmZpbml0ZSBsaW5lYXI7XG4gICAgYm9yZGVyLWJvdHRvbTogMS4xZW0gc29saWQgJHskQ09MT1JfUFJJTUFSWV8xfTtcbiAgICBib3JkZXItbGVmdDogMS4xZW0gc29saWQgJHskQ09MT1JfUFJJTUFSWV8wfTtcbiAgICBib3JkZXItcmFkaXVzOiA1MCU7XG4gICAgYm9yZGVyLXJpZ2h0OiAxLjFlbSBzb2xpZCAkeyRDT0xPUl9QUklNQVJZXzF9O1xuICAgIGJvcmRlci10b3A6IDEuMWVtIHNvbGlkICR7JENPTE9SX1BSSU1BUllfMX07XG4gICAgZm9udC1zaXplOiAxMHB4O1xuICAgIGhlaWdodDogMTBlbTtcbiAgICBtYXJnaW46IDYwcHggYXV0bztcbiAgICBwb3NpdGlvbjogcmVsYXRpdmU7XG4gICAgdHJhbnNmb3JtOiB0cmFuc2xhdGVaKDApO1xuICAgIHdpZHRoOiAxMGVtO1xuICAgICY6YWZ0ZXIge1xuICAgICAgICBib3JkZXItcmFkaXVzOiA1MCU7XG4gICAgICAgIHdpZHRoOiAxMGVtO1xuICAgICAgICBoZWlnaHQ6IDEwZW07XG4gICAgfVxuYDtcblxuZXhwb3J0IGNsYXNzIExvYWRpbmcgZXh0ZW5kcyBDb21wb25lbnQ8SVByb3BzPiB7XG4gICAgcHVibGljIHJlbmRlcigpIHtcbiAgICAgICAgaWYgKCF0aGlzLnByb3BzLnNob3duKSB7XG4gICAgICAgICAgICByZXR1cm4gbnVsbDtcbiAgICAgICAgfVxuICAgICAgICByZXR1cm4gKFxuICAgICAgICAgICAgPGRpdj5cbiAgICAgICAgICAgICAgICA8QkcgLz5cbiAgICAgICAgICAgICAgICA8U3Bpbm5lckJveD5cbiAgICAgICAgICAgICAgICAgICAgPFNwaW5uZXIgLz5cbiAgICAgICAgICAgICAgICA8L1NwaW5uZXJCb3g+XG4gICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgKTtcbiAgICB9XG59XG4iXX0=
+
+/***/ }),
+
 /***/ "./ts/components/TaskList.tsx":
 /*!************************************!*\
   !*** ./ts/components/TaskList.tsx ***!
@@ -62390,6 +65699,7 @@ var TaskActionCreators_1 = __webpack_require__(/*! ../actions/TaskActionCreators
 var Store_1 = __importDefault(__webpack_require__(/*! ../Store */ "./ts/Store.ts"));
 var AddTask_1 = __webpack_require__(/*! ./AddTask */ "./ts/components/AddTask.tsx");
 var FoundationStyles_1 = __webpack_require__(/*! ./FoundationStyles */ "./ts/components/FoundationStyles.ts");
+var Loading_1 = __webpack_require__(/*! ./Loading */ "./ts/components/Loading.tsx");
 var TaskRow_1 = __importDefault(__webpack_require__(/*! ./TaskRow */ "./ts/components/TaskRow.tsx"));
 //#region styled
 var MainContainer = styled_components_1.default.div(templateObject_1 || (templateObject_1 = __makeTemplateObject(["\n    margin: 10px auto 0 auto;\n    max-width: 600px;\n    min-width: 300px;\n    width: 80%;\n"], ["\n    margin: 10px auto 0 auto;\n    max-width: 600px;\n    min-width: 300px;\n    width: 80%;\n"])));
@@ -62403,7 +65713,7 @@ var TodoList = /** @class */ (function (_super) {
         return _super !== null && _super.apply(this, arguments) || this;
     }
     TodoList.prototype.componentDidMount = function () {
-        Store_1.default.dispatch(TaskActionCreators_1.createShowTasksAction([]));
+        Store_1.default.dispatch(TaskActionCreators_1.createLoadTasksAction(Store_1.default.dispatch));
     };
     TodoList.prototype.render = function () {
         var tasks = this.props.tasks;
@@ -62417,7 +65727,8 @@ var TodoList = /** @class */ (function (_super) {
             react_1.default.createElement(Header, null, "TODO"),
             react_1.default.createElement(MainContainer, null,
                 react_1.default.createElement(AddTask_1.AddTask, { taskName: "", deadline: moment_1.default().add(1, 'days').toDate() }),
-                react_1.default.createElement(TaskList, null, taskListElems))));
+                react_1.default.createElement(TaskList, null, taskListElems)),
+            react_1.default.createElement(Loading_1.Loading, { shown: this.props.shownLoading })));
     };
     return TodoList;
 }(react_1.default.Component));
@@ -62426,7 +65737,7 @@ var mapStoteToProps = function (state) {
 };
 exports.default = react_redux_1.connect(mapStoteToProps)(TodoList);
 var templateObject_1, templateObject_2, templateObject_3, templateObject_4;
-//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiVGFza0xpc3QuanMiLCJzb3VyY2VSb290IjoiLi90c3gvIiwic291cmNlcyI6WyJjb21wb25lbnRzL1Rhc2tMaXN0LnRzeCJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7QUFBQSxrREFBNEI7QUFDNUIsZ0RBQTBCO0FBQzFCLDJDQUFzQztBQUN0Qyx3RUFBdUM7QUFFdkMsb0VBQXNFO0FBRXRFLG1EQUF5QztBQUN6QyxxQ0FBb0M7QUFDcEMsdURBQW1HO0FBQ25HLHNEQUFnQztBQUVoQyxnQkFBZ0I7QUFDaEIsSUFBTSxhQUFhLEdBQUcsMkJBQU0sQ0FBQyxHQUFHLHFLQUFBLGtHQUsvQixJQUFBLENBQUM7QUFFRixJQUFNLE1BQU0sR0FBRywyQkFBTSxDQUFDLEVBQUUsd0xBQUEsMEJBQ0EsRUFBZ0IsZ0JBQzNCLEVBQXlCLHVFQUlyQyxLQUx1QixtQ0FBZ0IsRUFDM0IsNENBQXlCLENBSXJDLENBQUM7QUFFRixJQUFNLFNBQVMsR0FBRywyQkFBTSxDQUFDLE1BQU0sb0xBQUEsbURBRVAsRUFBZ0IsZ0JBQzNCLEVBQXlCLDBDQUdyQyxLQUp1QixtQ0FBZ0IsRUFDM0IsNENBQXlCLENBR3JDLENBQUM7QUFFRixJQUFNLFFBQVEsR0FBRywyQkFBTSxDQUFDLEdBQUcsOElBQUEsMkVBSTFCLElBQUEsQ0FBQztBQUVGLFlBQVk7QUFFWjtJQUF1Qiw0QkFBOEI7SUFBckQ7O0lBMEJBLENBQUM7SUF6QlUsb0NBQWlCLEdBQXhCO1FBQ0ksZUFBSyxDQUFDLFFBQVEsQ0FBQywwQ0FBcUIsQ0FBQyxFQUFFLENBQUMsQ0FBQyxDQUFDO0lBQzlDLENBQUM7SUFDTSx5QkFBTSxHQUFiO1FBQ1csSUFBQSx3QkFBSyxDQUFlO1FBQzNCLElBQU0sYUFBYSxHQUFHLEtBQUssQ0FBQyxJQUFJLENBQUMsVUFBQyxDQUFDLEVBQUUsQ0FBQztZQUNsQyxPQUFPLENBQUMsQ0FBQyxDQUFDLFFBQVEsR0FBRyxDQUFDLENBQUMsUUFBUSxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztnQkFDakMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLFFBQVEsQ0FBQyxPQUFPLEVBQUUsS0FBSyxDQUFDLENBQUMsUUFBUSxDQUFDLE9BQU8sRUFBRSxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO1FBQ2xFLENBQUMsQ0FBQyxDQUFDLEdBQUcsQ0FBQyxVQUFDLEVBQUU7WUFDTixPQUFPLENBQ0gsOEJBQUMsaUJBQU8sYUFBQyxHQUFHLEVBQUUsRUFBRSxDQUFDLEVBQUUsSUFBTSxFQUFFLEVBQUksQ0FDbEMsQ0FBQztRQUNOLENBQUMsQ0FBQyxDQUFDO1FBQ0gsT0FBTyxDQUNIO1lBQ0ksOEJBQUMsTUFBTSxlQUFjO1lBQ3JCLDhCQUFDLGFBQWE7Z0JBQ1YsOEJBQUMsaUJBQU8sSUFBQyxRQUFRLEVBQUMsRUFBRSxFQUFDLFFBQVEsRUFBRSxnQkFBTSxFQUFFLENBQUMsR0FBRyxDQUFDLENBQUMsRUFBRSxNQUFNLENBQUMsQ0FBQyxNQUFNLEVBQUUsR0FBSTtnQkFDbkUsOEJBQUMsUUFBUSxRQUNKLGFBQWEsQ0FDUCxDQUNDLENBQ2QsQ0FDVCxDQUFDO0lBQ04sQ0FBQztJQUNMLGVBQUM7QUFBRCxDQUFDLEFBMUJELENBQXVCLGVBQUssQ0FBQyxTQUFTLEdBMEJyQztBQUVELElBQU0sZUFBZSxHQUFHLFVBQUMsS0FBYTtJQUNsQyxPQUFPLEtBQUssQ0FBQyxRQUFRLENBQUM7QUFDMUIsQ0FBQyxDQUFDO0FBRUYsa0JBQWUscUJBQU8sQ0FBQyxlQUFlLENBQUMsQ0FBQyxRQUFRLENBQUMsQ0FBQyIsInNvdXJjZXNDb250ZW50IjpbImltcG9ydCBNb21lbnQgZnJvbSAnbW9tZW50JztcbmltcG9ydCBSZWFjdCBmcm9tICdyZWFjdCc7XG5pbXBvcnQgeyBjb25uZWN0IH0gZnJvbSAncmVhY3QtcmVkdXgnO1xuaW1wb3J0IFN0eWxlZCBmcm9tICdzdHlsZWQtY29tcG9uZW50cyc7XG5cbmltcG9ydCB7IGNyZWF0ZVNob3dUYXNrc0FjdGlvbiB9IGZyb20gJy4uL2FjdGlvbnMvVGFza0FjdGlvbkNyZWF0b3JzJztcbmltcG9ydCB7IElUYXNrTGlzdCB9IGZyb20gJy4uL3N0YXRlcy9JVGFzayc7XG5pbXBvcnQgc3RvcmUsIHsgSVN0YXRlIH0gZnJvbSAnLi4vU3RvcmUnO1xuaW1wb3J0IHsgQWRkVGFzayB9IGZyb20gJy4vQWRkVGFzayc7XG5pbXBvcnQgeyAkQ09MT1JfRk9SRUdST1VORF9SRVZFUlNFLCAkQ09MT1JfUFJJTUFSWV8wLCAkQ09MT1JfUFJJTUFSWV8zIH0gZnJvbSAnLi9Gb3VuZGF0aW9uU3R5bGVzJztcbmltcG9ydCBUYXNrUm93IGZyb20gJy4vVGFza1Jvdyc7XG5cbi8vI3JlZ2lvbiBzdHlsZWRcbmNvbnN0IE1haW5Db250YWluZXIgPSBTdHlsZWQuZGl2YFxuICAgIG1hcmdpbjogMTBweCBhdXRvIDAgYXV0bztcbiAgICBtYXgtd2lkdGg6IDYwMHB4O1xuICAgIG1pbi13aWR0aDogMzAwcHg7XG4gICAgd2lkdGg6IDgwJTtcbmA7XG5cbmNvbnN0IEhlYWRlciA9IFN0eWxlZC5oMWBcbiAgICBiYWNrZ3JvdW5kLWNvbG9yOiAkeyRDT0xPUl9QUklNQVJZXzN9O1xuICAgIGNvbG9yOiAkeyRDT0xPUl9GT1JFR1JPVU5EX1JFVkVSU0V9O1xuICAgIGZvbnQtc2l6ZTogMTYwJTtcbiAgICBwYWRkaW5nOiAxZW07XG4gICAgdGV4dC1hbGlnbjogY2VudGVyO1xuYDtcblxuY29uc3QgQWRkQnV0dG9uID0gU3R5bGVkLmJ1dHRvbmBcbiAgICBib3JkZXItcmFkaXVzOiA1cHg7XG4gICAgYmFja2dyb3VuZC1jb2xvcjogJHskQ09MT1JfUFJJTUFSWV8wfTtcbiAgICBjb2xvcjogJHskQ09MT1JfRk9SRUdST1VORF9SRVZFUlNFfTtcbiAgICB3aWR0aDogMTAwJTtcbiAgICBwYWRkaW5nOiAxZW07XG5gO1xuXG5jb25zdCBUYXNrTGlzdCA9IFN0eWxlZC5kaXZgXG4gICAgZGlzcGxheTogZmxleDtcbiAgICBmbGV4LWRpcmVjdGlvbjogY29sdW1uO1xuICAgIG1hcmdpbi10b3A6IDFlbTtcbmA7XG5cbi8vI2VuZHJlZ2lvblxuXG5jbGFzcyBUb2RvTGlzdCBleHRlbmRzIFJlYWN0LkNvbXBvbmVudDxJVGFza0xpc3QsIHt9PiB7XG4gICAgcHVibGljIGNvbXBvbmVudERpZE1vdW50KCkge1xuICAgICAgICBzdG9yZS5kaXNwYXRjaChjcmVhdGVTaG93VGFza3NBY3Rpb24oW10pKTtcbiAgICB9XG4gICAgcHVibGljIHJlbmRlcigpIHtcbiAgICAgICAgY29uc3Qge3Rhc2tzfSA9IHRoaXMucHJvcHM7XG4gICAgICAgIGNvbnN0IHRhc2tMaXN0RWxlbXMgPSB0YXNrcy5zb3J0KChhLCBiKSA9PiB7XG4gICAgICAgICAgICByZXR1cm4gKGEuZGVhZGxpbmUgPCBiLmRlYWRsaW5lKSA/IC0xXG4gICAgICAgICAgICAgICAgOiAoYS5kZWFkbGluZS5nZXRUaW1lKCkgPT09IGIuZGVhZGxpbmUuZ2V0VGltZSgpKSA/IDAgOiAxO1xuICAgICAgICB9KS5tYXAoKGl0KSA9PiB7XG4gICAgICAgICAgICByZXR1cm4gKFxuICAgICAgICAgICAgICAgIDxUYXNrUm93IGtleT17aXQuaWR9IHsuLi5pdH0gLz5cbiAgICAgICAgICAgICk7XG4gICAgICAgIH0pO1xuICAgICAgICByZXR1cm4gKFxuICAgICAgICAgICAgPGRpdj5cbiAgICAgICAgICAgICAgICA8SGVhZGVyPlRPRE88L0hlYWRlcj5cbiAgICAgICAgICAgICAgICA8TWFpbkNvbnRhaW5lcj5cbiAgICAgICAgICAgICAgICAgICAgPEFkZFRhc2sgdGFza05hbWU9XCJcIiBkZWFkbGluZT17TW9tZW50KCkuYWRkKDEsICdkYXlzJykudG9EYXRlKCl9IC8+XG4gICAgICAgICAgICAgICAgICAgIDxUYXNrTGlzdD5cbiAgICAgICAgICAgICAgICAgICAgICAgIHt0YXNrTGlzdEVsZW1zfVxuICAgICAgICAgICAgICAgICAgICA8L1Rhc2tMaXN0PlxuICAgICAgICAgICAgICAgIDwvTWFpbkNvbnRhaW5lcj5cbiAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICApO1xuICAgIH1cbn1cblxuY29uc3QgbWFwU3RvdGVUb1Byb3BzID0gKHN0YXRlOiBJU3RhdGUpOiBJVGFza0xpc3QgPT4ge1xuICAgIHJldHVybiBzdGF0ZS50YXNrTGlzdDtcbn07XG5cbmV4cG9ydCBkZWZhdWx0IGNvbm5lY3QobWFwU3RvdGVUb1Byb3BzKShUb2RvTGlzdCk7XG4iXX0=
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiVGFza0xpc3QuanMiLCJzb3VyY2VSb290IjoiLi90c3gvIiwic291cmNlcyI6WyJjb21wb25lbnRzL1Rhc2tMaXN0LnRzeCJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7QUFBQSxrREFBNEI7QUFDNUIsZ0RBQTBCO0FBQzFCLDJDQUFzQztBQUN0Qyx3RUFBdUM7QUFFdkMsb0VBQXNFO0FBR3RFLG1EQUE2QjtBQUM3QixxQ0FBb0M7QUFDcEMsdURBQW1HO0FBQ25HLHFDQUFvQztBQUNwQyxzREFBZ0M7QUFFaEMsZ0JBQWdCO0FBQ2hCLElBQU0sYUFBYSxHQUFHLDJCQUFNLENBQUMsR0FBRyxxS0FBQSxrR0FLL0IsSUFBQSxDQUFDO0FBRUYsSUFBTSxNQUFNLEdBQUcsMkJBQU0sQ0FBQyxFQUFFLHdMQUFBLDBCQUNBLEVBQWdCLGdCQUMzQixFQUF5Qix1RUFJckMsS0FMdUIsbUNBQWdCLEVBQzNCLDRDQUF5QixDQUlyQyxDQUFDO0FBRUYsSUFBTSxTQUFTLEdBQUcsMkJBQU0sQ0FBQyxNQUFNLG9MQUFBLG1EQUVQLEVBQWdCLGdCQUMzQixFQUF5QiwwQ0FHckMsS0FKdUIsbUNBQWdCLEVBQzNCLDRDQUF5QixDQUdyQyxDQUFDO0FBRUYsSUFBTSxRQUFRLEdBQUcsMkJBQU0sQ0FBQyxHQUFHLDhJQUFBLDJFQUkxQixJQUFBLENBQUM7QUFFRixZQUFZO0FBRVo7SUFBdUIsNEJBQThCO0lBQXJEOztJQTJCQSxDQUFDO0lBMUJVLG9DQUFpQixHQUF4QjtRQUNJLGVBQUssQ0FBQyxRQUFRLENBQUMsMENBQXFCLENBQUMsZUFBSyxDQUFDLFFBQVEsQ0FBQyxDQUFDLENBQUM7SUFDMUQsQ0FBQztJQUNNLHlCQUFNLEdBQWI7UUFDVyxJQUFBLHdCQUFLLENBQWU7UUFDM0IsSUFBTSxhQUFhLEdBQUcsS0FBSyxDQUFDLElBQUksQ0FBQyxVQUFDLENBQUMsRUFBRSxDQUFDO1lBQ2xDLE9BQU8sQ0FBQyxDQUFDLENBQUMsUUFBUSxHQUFHLENBQUMsQ0FBQyxRQUFRLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO2dCQUNqQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsUUFBUSxDQUFDLE9BQU8sRUFBRSxLQUFLLENBQUMsQ0FBQyxRQUFRLENBQUMsT0FBTyxFQUFFLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7UUFDbEUsQ0FBQyxDQUFDLENBQUMsR0FBRyxDQUFDLFVBQUMsRUFBRTtZQUNOLE9BQU8sQ0FDSCw4QkFBQyxpQkFBTyxhQUFDLEdBQUcsRUFBRSxFQUFFLENBQUMsRUFBRSxJQUFNLEVBQUUsRUFBSSxDQUNsQyxDQUFDO1FBQ04sQ0FBQyxDQUFDLENBQUM7UUFDSCxPQUFPLENBQ0g7WUFDSSw4QkFBQyxNQUFNLGVBQWM7WUFDckIsOEJBQUMsYUFBYTtnQkFDViw4QkFBQyxpQkFBTyxJQUFDLFFBQVEsRUFBQyxFQUFFLEVBQUMsUUFBUSxFQUFFLGdCQUFNLEVBQUUsQ0FBQyxHQUFHLENBQUMsQ0FBQyxFQUFFLE1BQU0sQ0FBQyxDQUFDLE1BQU0sRUFBRSxHQUFJO2dCQUNuRSw4QkFBQyxRQUFRLFFBQ0osYUFBYSxDQUNQLENBQ0M7WUFDaEIsOEJBQUMsaUJBQU8sSUFBQyxLQUFLLEVBQUUsSUFBSSxDQUFDLEtBQUssQ0FBQyxZQUFZLEdBQUksQ0FDekMsQ0FDVCxDQUFDO0lBQ04sQ0FBQztJQUNMLGVBQUM7QUFBRCxDQUFDLEFBM0JELENBQXVCLGVBQUssQ0FBQyxTQUFTLEdBMkJyQztBQUVELElBQU0sZUFBZSxHQUFHLFVBQUMsS0FBYTtJQUNsQyxPQUFPLEtBQUssQ0FBQyxRQUFRLENBQUM7QUFDMUIsQ0FBQyxDQUFDO0FBRUYsa0JBQWUscUJBQU8sQ0FBQyxlQUFlLENBQUMsQ0FBQyxRQUFRLENBQUMsQ0FBQyIsInNvdXJjZXNDb250ZW50IjpbImltcG9ydCBNb21lbnQgZnJvbSAnbW9tZW50JztcbmltcG9ydCBSZWFjdCBmcm9tICdyZWFjdCc7XG5pbXBvcnQgeyBjb25uZWN0IH0gZnJvbSAncmVhY3QtcmVkdXgnO1xuaW1wb3J0IFN0eWxlZCBmcm9tICdzdHlsZWQtY29tcG9uZW50cyc7XG5cbmltcG9ydCB7IGNyZWF0ZUxvYWRUYXNrc0FjdGlvbiB9IGZyb20gJy4uL2FjdGlvbnMvVGFza0FjdGlvbkNyZWF0b3JzJztcbmltcG9ydCB7IElTdGF0ZSB9IGZyb20gJy4uL0lTdG9yZSc7XG5pbXBvcnQgeyBJVGFza0xpc3QgfSBmcm9tICcuLi9zdGF0ZXMvSVRhc2snO1xuaW1wb3J0IHN0b3JlIGZyb20gJy4uL1N0b3JlJztcbmltcG9ydCB7IEFkZFRhc2sgfSBmcm9tICcuL0FkZFRhc2snO1xuaW1wb3J0IHsgJENPTE9SX0ZPUkVHUk9VTkRfUkVWRVJTRSwgJENPTE9SX1BSSU1BUllfMCwgJENPTE9SX1BSSU1BUllfMyB9IGZyb20gJy4vRm91bmRhdGlvblN0eWxlcyc7XG5pbXBvcnQgeyBMb2FkaW5nIH0gZnJvbSAnLi9Mb2FkaW5nJztcbmltcG9ydCBUYXNrUm93IGZyb20gJy4vVGFza1Jvdyc7XG5cbi8vI3JlZ2lvbiBzdHlsZWRcbmNvbnN0IE1haW5Db250YWluZXIgPSBTdHlsZWQuZGl2YFxuICAgIG1hcmdpbjogMTBweCBhdXRvIDAgYXV0bztcbiAgICBtYXgtd2lkdGg6IDYwMHB4O1xuICAgIG1pbi13aWR0aDogMzAwcHg7XG4gICAgd2lkdGg6IDgwJTtcbmA7XG5cbmNvbnN0IEhlYWRlciA9IFN0eWxlZC5oMWBcbiAgICBiYWNrZ3JvdW5kLWNvbG9yOiAkeyRDT0xPUl9QUklNQVJZXzN9O1xuICAgIGNvbG9yOiAkeyRDT0xPUl9GT1JFR1JPVU5EX1JFVkVSU0V9O1xuICAgIGZvbnQtc2l6ZTogMTYwJTtcbiAgICBwYWRkaW5nOiAxZW07XG4gICAgdGV4dC1hbGlnbjogY2VudGVyO1xuYDtcblxuY29uc3QgQWRkQnV0dG9uID0gU3R5bGVkLmJ1dHRvbmBcbiAgICBib3JkZXItcmFkaXVzOiA1cHg7XG4gICAgYmFja2dyb3VuZC1jb2xvcjogJHskQ09MT1JfUFJJTUFSWV8wfTtcbiAgICBjb2xvcjogJHskQ09MT1JfRk9SRUdST1VORF9SRVZFUlNFfTtcbiAgICB3aWR0aDogMTAwJTtcbiAgICBwYWRkaW5nOiAxZW07XG5gO1xuXG5jb25zdCBUYXNrTGlzdCA9IFN0eWxlZC5kaXZgXG4gICAgZGlzcGxheTogZmxleDtcbiAgICBmbGV4LWRpcmVjdGlvbjogY29sdW1uO1xuICAgIG1hcmdpbi10b3A6IDFlbTtcbmA7XG5cbi8vI2VuZHJlZ2lvblxuXG5jbGFzcyBUb2RvTGlzdCBleHRlbmRzIFJlYWN0LkNvbXBvbmVudDxJVGFza0xpc3QsIHt9PiB7XG4gICAgcHVibGljIGNvbXBvbmVudERpZE1vdW50KCkge1xuICAgICAgICBzdG9yZS5kaXNwYXRjaChjcmVhdGVMb2FkVGFza3NBY3Rpb24oc3RvcmUuZGlzcGF0Y2gpKTtcbiAgICB9XG4gICAgcHVibGljIHJlbmRlcigpIHtcbiAgICAgICAgY29uc3Qge3Rhc2tzfSA9IHRoaXMucHJvcHM7XG4gICAgICAgIGNvbnN0IHRhc2tMaXN0RWxlbXMgPSB0YXNrcy5zb3J0KChhLCBiKSA9PiB7XG4gICAgICAgICAgICByZXR1cm4gKGEuZGVhZGxpbmUgPCBiLmRlYWRsaW5lKSA/IC0xXG4gICAgICAgICAgICAgICAgOiAoYS5kZWFkbGluZS5nZXRUaW1lKCkgPT09IGIuZGVhZGxpbmUuZ2V0VGltZSgpKSA/IDAgOiAxO1xuICAgICAgICB9KS5tYXAoKGl0KSA9PiB7XG4gICAgICAgICAgICByZXR1cm4gKFxuICAgICAgICAgICAgICAgIDxUYXNrUm93IGtleT17aXQuaWR9IHsuLi5pdH0gLz5cbiAgICAgICAgICAgICk7XG4gICAgICAgIH0pO1xuICAgICAgICByZXR1cm4gKFxuICAgICAgICAgICAgPGRpdj5cbiAgICAgICAgICAgICAgICA8SGVhZGVyPlRPRE88L0hlYWRlcj5cbiAgICAgICAgICAgICAgICA8TWFpbkNvbnRhaW5lcj5cbiAgICAgICAgICAgICAgICAgICAgPEFkZFRhc2sgdGFza05hbWU9XCJcIiBkZWFkbGluZT17TW9tZW50KCkuYWRkKDEsICdkYXlzJykudG9EYXRlKCl9IC8+XG4gICAgICAgICAgICAgICAgICAgIDxUYXNrTGlzdD5cbiAgICAgICAgICAgICAgICAgICAgICAgIHt0YXNrTGlzdEVsZW1zfVxuICAgICAgICAgICAgICAgICAgICA8L1Rhc2tMaXN0PlxuICAgICAgICAgICAgICAgIDwvTWFpbkNvbnRhaW5lcj5cbiAgICAgICAgICAgICAgICA8TG9hZGluZyBzaG93bj17dGhpcy5wcm9wcy5zaG93bkxvYWRpbmd9IC8+XG4gICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgKTtcbiAgICB9XG59XG5cbmNvbnN0IG1hcFN0b3RlVG9Qcm9wcyA9IChzdGF0ZTogSVN0YXRlKTogSVRhc2tMaXN0ID0+IHtcbiAgICByZXR1cm4gc3RhdGUudGFza0xpc3Q7XG59O1xuXG5leHBvcnQgZGVmYXVsdCBjb25uZWN0KG1hcFN0b3RlVG9Qcm9wcykoVG9kb0xpc3QpO1xuIl19
 
 /***/ }),
 
@@ -62501,10 +65812,10 @@ var TaskRow = /** @class */ (function (_super) {
     function TaskRow() {
         var _this = _super !== null && _super.apply(this, arguments) || this;
         _this.onClickBox = function (id, e) {
-            Store_1.default.dispatch(TaskActionCreators_1.createToggleCompleteAction(id));
+            Store_1.default.dispatch(TaskActionCreators_1.createToggleCompleteAction(id, Store_1.default));
         };
         _this.onClickDelete = function (id, e) {
-            Store_1.default.dispatch(TaskActionCreators_1.createDeleteTaskAction(id));
+            Store_1.default.dispatch(TaskActionCreators_1.createDeleteTaskAction(id, Store_1.default));
             e.stopPropagation();
         };
         return _this;
@@ -62526,7 +65837,7 @@ var TaskRow = /** @class */ (function (_super) {
 }(react_1.default.Component));
 exports.default = TaskRow;
 var templateObject_1, templateObject_2, templateObject_3, templateObject_4, templateObject_5, templateObject_6, templateObject_7;
-//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiVGFza1Jvdy5qcyIsInNvdXJjZVJvb3QiOiIuL3RzeC8iLCJzb3VyY2VzIjpbImNvbXBvbmVudHMvVGFza1Jvdy50c3giXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6Ijs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7OztBQUFBLGtEQUE0QjtBQUM1QixnREFBMEI7QUFDMUIsd0VBQXVDO0FBRXZDLG9FQUFtRztBQUVuRyxtREFBNkI7QUFDN0IsdURBQWdGO0FBRWhGLGdCQUFnQjtBQUNoQjs7R0FFRztBQUNILElBQU0sSUFBSSxHQUFHLDJCQUFNLENBQUMsR0FBRyxxZkFBeUIsb0RBRXhCLEVBQXNELDRYQWU3RSxLQWZ1QixVQUFDLENBQUMsSUFBSyxPQUFBLENBQUMsQ0FBQyxVQUFVLENBQUMsQ0FBQyxDQUFDLFNBQVMsQ0FBQyxDQUFDLENBQUMsdUNBQW9CLEVBQS9DLENBQStDLENBZTdFLENBQUM7QUFFRjs7R0FFRztBQUNILElBQU0sWUFBWSxHQUFHLDJCQUFNLENBQUMsR0FBRyxpVEFBQSw4T0FXOUIsSUFBQSxDQUFDO0FBQ0Y7O0dBRUc7QUFDSCxJQUFNLFNBQVMsR0FBRywyQkFBTSxDQUFDLENBQUMsK0dBQUEsZUFDYixFQUFvQiwyQkFFaEMsS0FGWSx1Q0FBb0IsQ0FFaEMsQ0FBQztBQUNGOztHQUVHO0FBQ0gsSUFBTSxRQUFRLEdBQUcsMkJBQU0sQ0FBQyxHQUFHLHNOQUFBLG1KQU8xQixJQUFBLENBQUM7QUFDRjs7R0FFRztBQUNILElBQU0sVUFBVSxHQUFHLDJCQUFNLENBQUMsR0FBRywrR0FBQSw0Q0FHNUIsSUFBQSxDQUFDO0FBQ0Y7O0dBRUc7QUFDSCxJQUFNLFFBQVEsR0FBRywyQkFBTSxDQUFDLEdBQUcsNkZBQUEsMEJBRTFCLElBQUEsQ0FBQztBQUVGOztHQUVHO0FBQ0gsSUFBTSxRQUFRLEdBQUcsMkJBQU0sQ0FBQyxHQUFHLHVFQUFBLElBQzFCLElBQUEsQ0FBQztBQUVGLFlBQVk7QUFFWjtJQUFzQiwyQkFBMEI7SUFBaEQ7UUFBQSxxRUE2QkM7UUFSVyxnQkFBVSxHQUFHLFVBQUMsRUFBVSxFQUFFLENBQW1CO1lBQ2pELGVBQUssQ0FBQyxRQUFRLENBQUMsK0NBQTBCLENBQUMsRUFBRSxDQUFDLENBQUMsQ0FBQztRQUNuRCxDQUFDLENBQUE7UUFFTyxtQkFBYSxHQUFHLFVBQUMsRUFBVSxFQUFFLENBQW1CO1lBQ3BELGVBQUssQ0FBQyxRQUFRLENBQUMsMkNBQXNCLENBQUMsRUFBRSxDQUFDLENBQUMsQ0FBQztZQUMzQyxDQUFDLENBQUMsZUFBZSxFQUFFLENBQUM7UUFDeEIsQ0FBQyxDQUFBOztJQUNMLENBQUM7SUE1QlUsd0JBQU0sR0FBYjtRQUNJLElBQU0sRUFBRSxHQUFHLElBQUksQ0FBQyxLQUFLLENBQUM7UUFDdEIsSUFBTSxjQUFjLEdBQUcsZ0JBQU0sQ0FBQyxFQUFFLENBQUMsUUFBUSxDQUFDLENBQUMsTUFBTSxDQUFDLGtCQUFrQixDQUFDLENBQUM7UUFDdEUsT0FBTyxDQUNILDhCQUFDLElBQUksSUFBQyxVQUFVLEVBQUUsSUFBSSxJQUFJLEVBQUUsR0FBRyxFQUFFLENBQUMsUUFBUSxJQUFJLEVBQUUsQ0FBQyxRQUFRLEVBQ3JELE9BQU8sRUFBRSxJQUFJLENBQUMsVUFBVSxDQUFDLElBQUksQ0FBQyxJQUFJLEVBQUUsRUFBRSxDQUFDLEVBQUUsQ0FBQztZQUMxQyw4QkFBQyxZQUFZO2dCQUNULDhCQUFDLFNBQVMsUUFDTCxFQUFFLENBQUMsUUFBUSxDQUFDLENBQUMsQ0FBQyxJQUFJLENBQUMsQ0FBQyxDQUFDLElBQUksQ0FDbEIsQ0FDRDtZQUNmLDhCQUFDLFFBQVE7Z0JBQ0wsOEJBQUMsUUFBUSxRQUFFLEVBQUUsQ0FBQyxRQUFRLENBQVk7Z0JBQ2xDLDhCQUFDLFFBQVE7O29CQUFHLGNBQWMsQ0FBWSxDQUMvQjtZQUNYLDhCQUFDLFVBQVUsSUFBQyxPQUFPLEVBQUUsSUFBSSxDQUFDLGFBQWEsQ0FBQyxJQUFJLENBQUMsSUFBSSxFQUFFLEVBQUUsQ0FBQyxFQUFFLENBQUMsYUFBZ0IsQ0FDdEUsQ0FDVixDQUFDO0lBQ04sQ0FBQztJQVVMLGNBQUM7QUFBRCxDQUFDLEFBN0JELENBQXNCLGVBQUssQ0FBQyxTQUFTLEdBNkJwQztBQUVELGtCQUFlLE9BQU8sQ0FBQyIsInNvdXJjZXNDb250ZW50IjpbImltcG9ydCBNb21lbnQgZnJvbSAnbW9tZW50JztcbmltcG9ydCBSZWFjdCBmcm9tICdyZWFjdCc7XG5pbXBvcnQgU3R5bGVkIGZyb20gJ3N0eWxlZC1jb21wb25lbnRzJztcblxuaW1wb3J0IHsgY3JlYXRlRGVsZXRlVGFza0FjdGlvbiwgY3JlYXRlVG9nZ2xlQ29tcGxldGVBY3Rpb24gfSBmcm9tICcuLi9hY3Rpb25zL1Rhc2tBY3Rpb25DcmVhdG9ycyc7XG5pbXBvcnQgeyBJVGFzayB9IGZyb20gJy4uL3N0YXRlcy9JVGFzayc7XG5pbXBvcnQgc3RvcmUgZnJvbSAnLi4vU3RvcmUnO1xuaW1wb3J0IHsgJENPTE9SX1NFQ09OREFSWV8xXzMsICRDT0xPUl9TRUNPTkRBUllfMl8wIH0gZnJvbSAnLi9Gb3VuZGF0aW9uU3R5bGVzJztcblxuLy8jcmVnaW9uIHN0eWxlZFxuLyoqXG4gKiDooYzjga7lpKflpJbmnqAuLi4oMSlcbiAqL1xuY29uc3QgVGFzayA9IFN0eWxlZC5kaXY8e2V4cGlyYXRpb246IGJvb2xlYW47IH0+YFxuICAgIGFsaWduLWl0ZW1zOiBjZW50ZXI7XG4gICAgYmFja2dyb3VuZC1jb2xvcjogJHsocCkgPT4gcC5leHBpcmF0aW9uID8gJ2luaGVyaXQnIDogJENPTE9SX1NFQ09OREFSWV8yXzB9O1xuICAgIGJvcmRlci1yYWRpdXM6IDVweDtcbiAgICBjdXJzb3I6IHBvaW50ZXI7XG4gICAgYm9yZGVyOiAxcHggc29saWQgcmdiKDIwMCwyMDAsMjAwKTtcbiAgICBkaXNwbGF5OiBmbGV4O1xuICAgIGZsZXgtZGlyZWN0aW9uOiByb3c7XG4gICAgbWFyZ2luLWJvdHRvbTogMWVtO1xuICAgIHBhZGRpbmc6IDEwcHg7XG4gICAgdHJhbnNpdGlvbi1kdXJhdGlvbjogLjJzO1xuICAgIHRyYW5zaXRpb24tcHJvcGVydHk6IGFsbDtcbiAgICAvKiAoMikgKi9cbiAgICAmOmhvdmVyIHtcbiAgICAgICAgdHJhbnNmb3JtOiB0cmFuc2xhdGUoLTVweCwgLTVweCk7XG4gICAgICAgIGJveC1zaGFkb3c6IDVweCA1cHggNXB4IHJnYmEoMjAwLDIwMCwyMDAsNCk7XG4gICAgfVxuYDtcblxuLyoqXG4gKiDjgr/jgrnjgq/lrozkuobjga7jg4Hjgqfjg4Pjgq/jgqLjgqTjgrPjg7PooajnpLog5p6gXG4gKi9cbmNvbnN0IFRhc2tDaGVja0JveCA9IFN0eWxlZC5kaXZgXG4gICAgYWxpZ24taXRlbXM6IGNlbnRlcjtcbiAgICBiYWNrZ3JvdW5kLWNvbG9yOiAjZmZmO1xuICAgIGJvcmRlcjogMnB4IHNvbGlkICNjY2M7XG4gICAgYm9yZGVyLXJhZGl1czogNTAlO1xuICAgIGRpc3BsYXk6IGZsZXg7XG4gICAganVzdGlmeS1jb250ZW50OiBjZW50ZXI7XG4gICAgZmxleC1ncm93OiAwO1xuICAgIGZsZXgtc2hyaW5rOiAwO1xuICAgIGhlaWdodDogMmVtO1xuICAgIHdpZHRoOiAyZW07XG5gO1xuLyoqXG4gKiDjgr/jgrnjgq/lrozkuobjg4Hjgqfjg4Pjgq/jgqLjgqTjgrPjg7NcbiAqL1xuY29uc3QgVGFza0NoZWNrID0gU3R5bGVkLnBgXG4gICAgY29sb3I6ICR7JENPTE9SX1NFQ09OREFSWV8xXzN9O1xuICAgIGZvbnQtc2l6ZTogMTUwJTtcbmA7XG4vKipcbiAqIOOCv+OCueOCr+WQjeOBqOacn+aXpeOBruihqOekuiDmnqBcbiAqL1xuY29uc3QgVGFza0JvZHkgPSBTdHlsZWQuZGl2YFxuICAgIGRpc3BsYXk6IGZsZXg7XG4gICAgZmxleC1kaXJlY3Rpb246IGNvbHVtbjtcbiAgICBmbGV4LWdyb3c6IDE7XG4gICAgZmxleC1zaHJpbms6IDA7XG4gICAgaGVpZ2h0OiAzZW07XG4gICAganVzdGlmeS1jb250ZW50OiBzcGFjZS1hcm91bmQ7XG5gO1xuLyoqXG4gKiDjgr/jgrnjgq/liYrpmaTjgqLjgqTjgrPjg7NcbiAqL1xuY29uc3QgVGFza1JlbW92ZSA9IFN0eWxlZC5kaXZgXG4gICAgZmxleC1ncm93OiAwO1xuICAgIGZsZXgtc2hyaW5rOiAwO1xuYDtcbi8qKlxuICog44K/44K544Kv5ZCNXG4gKi9cbmNvbnN0IFRhc2tOYW1lID0gU3R5bGVkLmRpdmBcbiAgICBmb250LXNpemU6IDEyMCU7XG5gO1xuXG4vKipcbiAqIOacn+aXpVxuICovXG5jb25zdCBEZWFkbGluZSA9IFN0eWxlZC5kaXZgXG5gO1xuXG4vLyNlbmRyZWdpb25cblxuY2xhc3MgVGFza1JvdyBleHRlbmRzIFJlYWN0LkNvbXBvbmVudDxJVGFzaywge30+IHtcbiAgICBwdWJsaWMgcmVuZGVyKCkge1xuICAgICAgICBjb25zdCBpdCA9IHRoaXMucHJvcHM7XG4gICAgICAgIGNvbnN0IGRlYWRsaW5lU3RyaW5nID0gTW9tZW50KGl0LmRlYWRsaW5lKS5mb3JtYXQoJ1lZWVktTU0tREQgaGg6bW0nKTtcbiAgICAgICAgcmV0dXJuIChcbiAgICAgICAgICAgIDxUYXNrIGV4cGlyYXRpb249e25ldyBEYXRlKCkgPCBpdC5kZWFkbGluZSB8fCBpdC5jb21wbGV0ZX1cbiAgICAgICAgICAgICAgICBvbkNsaWNrPXt0aGlzLm9uQ2xpY2tCb3guYmluZCh0aGlzLCBpdC5pZCl9PlxuICAgICAgICAgICAgICAgIDxUYXNrQ2hlY2tCb3g+XG4gICAgICAgICAgICAgICAgICAgIDxUYXNrQ2hlY2s+XG4gICAgICAgICAgICAgICAgICAgICAgICB7aXQuY29tcGxldGUgPyAn4pyU77iOJyA6IG51bGx9XG4gICAgICAgICAgICAgICAgICAgIDwvVGFza0NoZWNrPlxuICAgICAgICAgICAgICAgIDwvVGFza0NoZWNrQm94PlxuICAgICAgICAgICAgICAgIDxUYXNrQm9keT5cbiAgICAgICAgICAgICAgICAgICAgPFRhc2tOYW1lPntpdC50YXNrTmFtZX08L1Rhc2tOYW1lPlxuICAgICAgICAgICAgICAgICAgICA8RGVhZGxpbmU+4o+we2RlYWRsaW5lU3RyaW5nfTwvRGVhZGxpbmU+XG4gICAgICAgICAgICAgICAgPC9UYXNrQm9keT5cbiAgICAgICAgICAgICAgICA8VGFza1JlbW92ZSBvbkNsaWNrPXt0aGlzLm9uQ2xpY2tEZWxldGUuYmluZCh0aGlzLCBpdC5pZCl9PuKdjDwvVGFza1JlbW92ZT5cbiAgICAgICAgICAgIDwvVGFzaz5cbiAgICAgICAgKTtcbiAgICB9XG5cbiAgICBwcml2YXRlIG9uQ2xpY2tCb3ggPSAoaWQ6IHN0cmluZywgZTogUmVhY3QuTW91c2VFdmVudCkgPT4ge1xuICAgICAgICBzdG9yZS5kaXNwYXRjaChjcmVhdGVUb2dnbGVDb21wbGV0ZUFjdGlvbihpZCkpO1xuICAgIH1cblxuICAgIHByaXZhdGUgb25DbGlja0RlbGV0ZSA9IChpZDogc3RyaW5nLCBlOiBSZWFjdC5Nb3VzZUV2ZW50KSA9PiB7XG4gICAgICAgIHN0b3JlLmRpc3BhdGNoKGNyZWF0ZURlbGV0ZVRhc2tBY3Rpb24oaWQpKTtcbiAgICAgICAgZS5zdG9wUHJvcGFnYXRpb24oKTtcbiAgICB9XG59XG5cbmV4cG9ydCBkZWZhdWx0IFRhc2tSb3c7XG4iXX0=
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiVGFza1Jvdy5qcyIsInNvdXJjZVJvb3QiOiIuL3RzeC8iLCJzb3VyY2VzIjpbImNvbXBvbmVudHMvVGFza1Jvdy50c3giXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6Ijs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7OztBQUFBLGtEQUE0QjtBQUM1QixnREFBMEI7QUFDMUIsd0VBQXVDO0FBRXZDLG9FQUFtRztBQUVuRyxtREFBNkI7QUFDN0IsdURBQWdGO0FBRWhGLGdCQUFnQjtBQUNoQjs7R0FFRztBQUNILElBQU0sSUFBSSxHQUFHLDJCQUFNLENBQUMsR0FBRyxxZkFBeUIsb0RBRXhCLEVBQXNELDRYQWU3RSxLQWZ1QixVQUFDLENBQUMsSUFBSyxPQUFBLENBQUMsQ0FBQyxVQUFVLENBQUMsQ0FBQyxDQUFDLFNBQVMsQ0FBQyxDQUFDLENBQUMsdUNBQW9CLEVBQS9DLENBQStDLENBZTdFLENBQUM7QUFFRjs7R0FFRztBQUNILElBQU0sWUFBWSxHQUFHLDJCQUFNLENBQUMsR0FBRyxpVEFBQSw4T0FXOUIsSUFBQSxDQUFDO0FBQ0Y7O0dBRUc7QUFDSCxJQUFNLFNBQVMsR0FBRywyQkFBTSxDQUFDLENBQUMsK0dBQUEsZUFDYixFQUFvQiwyQkFFaEMsS0FGWSx1Q0FBb0IsQ0FFaEMsQ0FBQztBQUNGOztHQUVHO0FBQ0gsSUFBTSxRQUFRLEdBQUcsMkJBQU0sQ0FBQyxHQUFHLHNOQUFBLG1KQU8xQixJQUFBLENBQUM7QUFDRjs7R0FFRztBQUNILElBQU0sVUFBVSxHQUFHLDJCQUFNLENBQUMsR0FBRywrR0FBQSw0Q0FHNUIsSUFBQSxDQUFDO0FBQ0Y7O0dBRUc7QUFDSCxJQUFNLFFBQVEsR0FBRywyQkFBTSxDQUFDLEdBQUcsNkZBQUEsMEJBRTFCLElBQUEsQ0FBQztBQUVGOztHQUVHO0FBQ0gsSUFBTSxRQUFRLEdBQUcsMkJBQU0sQ0FBQyxHQUFHLHVFQUFBLElBQzFCLElBQUEsQ0FBQztBQUVGLFlBQVk7QUFFWjtJQUFzQiwyQkFBMEI7SUFBaEQ7UUFBQSxxRUE2QkM7UUFSVyxnQkFBVSxHQUFHLFVBQUMsRUFBVSxFQUFFLENBQW1CO1lBQ2pELGVBQUssQ0FBQyxRQUFRLENBQUMsK0NBQTBCLENBQUMsRUFBRSxFQUFFLGVBQUssQ0FBQyxDQUFDLENBQUM7UUFDMUQsQ0FBQyxDQUFBO1FBRU8sbUJBQWEsR0FBRyxVQUFDLEVBQVUsRUFBRSxDQUFtQjtZQUNwRCxlQUFLLENBQUMsUUFBUSxDQUFDLDJDQUFzQixDQUFDLEVBQUUsRUFBRSxlQUFLLENBQUMsQ0FBQyxDQUFDO1lBQ2xELENBQUMsQ0FBQyxlQUFlLEVBQUUsQ0FBQztRQUN4QixDQUFDLENBQUE7O0lBQ0wsQ0FBQztJQTVCVSx3QkFBTSxHQUFiO1FBQ0ksSUFBTSxFQUFFLEdBQUcsSUFBSSxDQUFDLEtBQUssQ0FBQztRQUN0QixJQUFNLGNBQWMsR0FBRyxnQkFBTSxDQUFDLEVBQUUsQ0FBQyxRQUFRLENBQUMsQ0FBQyxNQUFNLENBQUMsa0JBQWtCLENBQUMsQ0FBQztRQUN0RSxPQUFPLENBQ0gsOEJBQUMsSUFBSSxJQUFDLFVBQVUsRUFBRSxJQUFJLElBQUksRUFBRSxHQUFHLEVBQUUsQ0FBQyxRQUFRLElBQUksRUFBRSxDQUFDLFFBQVEsRUFDckQsT0FBTyxFQUFFLElBQUksQ0FBQyxVQUFVLENBQUMsSUFBSSxDQUFDLElBQUksRUFBRSxFQUFFLENBQUMsRUFBRSxDQUFDO1lBQzFDLDhCQUFDLFlBQVk7Z0JBQ1QsOEJBQUMsU0FBUyxRQUNMLEVBQUUsQ0FBQyxRQUFRLENBQUMsQ0FBQyxDQUFDLElBQUksQ0FBQyxDQUFDLENBQUMsSUFBSSxDQUNsQixDQUNEO1lBQ2YsOEJBQUMsUUFBUTtnQkFDTCw4QkFBQyxRQUFRLFFBQUUsRUFBRSxDQUFDLFFBQVEsQ0FBWTtnQkFDbEMsOEJBQUMsUUFBUTs7b0JBQUcsY0FBYyxDQUFZLENBQy9CO1lBQ1gsOEJBQUMsVUFBVSxJQUFDLE9BQU8sRUFBRSxJQUFJLENBQUMsYUFBYSxDQUFDLElBQUksQ0FBQyxJQUFJLEVBQUUsRUFBRSxDQUFDLEVBQUUsQ0FBQyxhQUFnQixDQUN0RSxDQUNWLENBQUM7SUFDTixDQUFDO0lBVUwsY0FBQztBQUFELENBQUMsQUE3QkQsQ0FBc0IsZUFBSyxDQUFDLFNBQVMsR0E2QnBDO0FBRUQsa0JBQWUsT0FBTyxDQUFDIiwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IE1vbWVudCBmcm9tICdtb21lbnQnO1xuaW1wb3J0IFJlYWN0IGZyb20gJ3JlYWN0JztcbmltcG9ydCBTdHlsZWQgZnJvbSAnc3R5bGVkLWNvbXBvbmVudHMnO1xuXG5pbXBvcnQgeyBjcmVhdGVEZWxldGVUYXNrQWN0aW9uLCBjcmVhdGVUb2dnbGVDb21wbGV0ZUFjdGlvbiB9IGZyb20gJy4uL2FjdGlvbnMvVGFza0FjdGlvbkNyZWF0b3JzJztcbmltcG9ydCB7IElUYXNrIH0gZnJvbSAnLi4vc3RhdGVzL0lUYXNrJztcbmltcG9ydCBzdG9yZSBmcm9tICcuLi9TdG9yZSc7XG5pbXBvcnQgeyAkQ09MT1JfU0VDT05EQVJZXzFfMywgJENPTE9SX1NFQ09OREFSWV8yXzAgfSBmcm9tICcuL0ZvdW5kYXRpb25TdHlsZXMnO1xuXG4vLyNyZWdpb24gc3R5bGVkXG4vKipcbiAqIOihjOOBruWkp+WkluaeoC4uLigxKVxuICovXG5jb25zdCBUYXNrID0gU3R5bGVkLmRpdjx7ZXhwaXJhdGlvbjogYm9vbGVhbjsgfT5gXG4gICAgYWxpZ24taXRlbXM6IGNlbnRlcjtcbiAgICBiYWNrZ3JvdW5kLWNvbG9yOiAkeyhwKSA9PiBwLmV4cGlyYXRpb24gPyAnaW5oZXJpdCcgOiAkQ09MT1JfU0VDT05EQVJZXzJfMH07XG4gICAgYm9yZGVyLXJhZGl1czogNXB4O1xuICAgIGN1cnNvcjogcG9pbnRlcjtcbiAgICBib3JkZXI6IDFweCBzb2xpZCByZ2IoMjAwLDIwMCwyMDApO1xuICAgIGRpc3BsYXk6IGZsZXg7XG4gICAgZmxleC1kaXJlY3Rpb246IHJvdztcbiAgICBtYXJnaW4tYm90dG9tOiAxZW07XG4gICAgcGFkZGluZzogMTBweDtcbiAgICB0cmFuc2l0aW9uLWR1cmF0aW9uOiAuMnM7XG4gICAgdHJhbnNpdGlvbi1wcm9wZXJ0eTogYWxsO1xuICAgIC8qICgyKSAqL1xuICAgICY6aG92ZXIge1xuICAgICAgICB0cmFuc2Zvcm06IHRyYW5zbGF0ZSgtNXB4LCAtNXB4KTtcbiAgICAgICAgYm94LXNoYWRvdzogNXB4IDVweCA1cHggcmdiYSgyMDAsMjAwLDIwMCw0KTtcbiAgICB9XG5gO1xuXG4vKipcbiAqIOOCv+OCueOCr+WujOS6huOBruODgeOCp+ODg+OCr+OCouOCpOOCs+ODs+ihqOekuiDmnqBcbiAqL1xuY29uc3QgVGFza0NoZWNrQm94ID0gU3R5bGVkLmRpdmBcbiAgICBhbGlnbi1pdGVtczogY2VudGVyO1xuICAgIGJhY2tncm91bmQtY29sb3I6ICNmZmY7XG4gICAgYm9yZGVyOiAycHggc29saWQgI2NjYztcbiAgICBib3JkZXItcmFkaXVzOiA1MCU7XG4gICAgZGlzcGxheTogZmxleDtcbiAgICBqdXN0aWZ5LWNvbnRlbnQ6IGNlbnRlcjtcbiAgICBmbGV4LWdyb3c6IDA7XG4gICAgZmxleC1zaHJpbms6IDA7XG4gICAgaGVpZ2h0OiAyZW07XG4gICAgd2lkdGg6IDJlbTtcbmA7XG4vKipcbiAqIOOCv+OCueOCr+WujOS6huODgeOCp+ODg+OCr+OCouOCpOOCs+ODs1xuICovXG5jb25zdCBUYXNrQ2hlY2sgPSBTdHlsZWQucGBcbiAgICBjb2xvcjogJHskQ09MT1JfU0VDT05EQVJZXzFfM307XG4gICAgZm9udC1zaXplOiAxNTAlO1xuYDtcbi8qKlxuICog44K/44K544Kv5ZCN44Go5pyf5pel44Gu6KGo56S6IOaeoFxuICovXG5jb25zdCBUYXNrQm9keSA9IFN0eWxlZC5kaXZgXG4gICAgZGlzcGxheTogZmxleDtcbiAgICBmbGV4LWRpcmVjdGlvbjogY29sdW1uO1xuICAgIGZsZXgtZ3JvdzogMTtcbiAgICBmbGV4LXNocmluazogMDtcbiAgICBoZWlnaHQ6IDNlbTtcbiAgICBqdXN0aWZ5LWNvbnRlbnQ6IHNwYWNlLWFyb3VuZDtcbmA7XG4vKipcbiAqIOOCv+OCueOCr+WJiumZpOOCouOCpOOCs+ODs1xuICovXG5jb25zdCBUYXNrUmVtb3ZlID0gU3R5bGVkLmRpdmBcbiAgICBmbGV4LWdyb3c6IDA7XG4gICAgZmxleC1zaHJpbms6IDA7XG5gO1xuLyoqXG4gKiDjgr/jgrnjgq/lkI1cbiAqL1xuY29uc3QgVGFza05hbWUgPSBTdHlsZWQuZGl2YFxuICAgIGZvbnQtc2l6ZTogMTIwJTtcbmA7XG5cbi8qKlxuICog5pyf5pelXG4gKi9cbmNvbnN0IERlYWRsaW5lID0gU3R5bGVkLmRpdmBcbmA7XG5cbi8vI2VuZHJlZ2lvblxuXG5jbGFzcyBUYXNrUm93IGV4dGVuZHMgUmVhY3QuQ29tcG9uZW50PElUYXNrLCB7fT4ge1xuICAgIHB1YmxpYyByZW5kZXIoKSB7XG4gICAgICAgIGNvbnN0IGl0ID0gdGhpcy5wcm9wcztcbiAgICAgICAgY29uc3QgZGVhZGxpbmVTdHJpbmcgPSBNb21lbnQoaXQuZGVhZGxpbmUpLmZvcm1hdCgnWVlZWS1NTS1ERCBoaDptbScpO1xuICAgICAgICByZXR1cm4gKFxuICAgICAgICAgICAgPFRhc2sgZXhwaXJhdGlvbj17bmV3IERhdGUoKSA8IGl0LmRlYWRsaW5lIHx8IGl0LmNvbXBsZXRlfVxuICAgICAgICAgICAgICAgIG9uQ2xpY2s9e3RoaXMub25DbGlja0JveC5iaW5kKHRoaXMsIGl0LmlkKX0+XG4gICAgICAgICAgICAgICAgPFRhc2tDaGVja0JveD5cbiAgICAgICAgICAgICAgICAgICAgPFRhc2tDaGVjaz5cbiAgICAgICAgICAgICAgICAgICAgICAgIHtpdC5jb21wbGV0ZSA/ICfinJTvuI4nIDogbnVsbH1cbiAgICAgICAgICAgICAgICAgICAgPC9UYXNrQ2hlY2s+XG4gICAgICAgICAgICAgICAgPC9UYXNrQ2hlY2tCb3g+XG4gICAgICAgICAgICAgICAgPFRhc2tCb2R5PlxuICAgICAgICAgICAgICAgICAgICA8VGFza05hbWU+e2l0LnRhc2tOYW1lfTwvVGFza05hbWU+XG4gICAgICAgICAgICAgICAgICAgIDxEZWFkbGluZT7ij7B7ZGVhZGxpbmVTdHJpbmd9PC9EZWFkbGluZT5cbiAgICAgICAgICAgICAgICA8L1Rhc2tCb2R5PlxuICAgICAgICAgICAgICAgIDxUYXNrUmVtb3ZlIG9uQ2xpY2s9e3RoaXMub25DbGlja0RlbGV0ZS5iaW5kKHRoaXMsIGl0LmlkKX0+4p2MPC9UYXNrUmVtb3ZlPlxuICAgICAgICAgICAgPC9UYXNrPlxuICAgICAgICApO1xuICAgIH1cblxuICAgIHByaXZhdGUgb25DbGlja0JveCA9IChpZDogc3RyaW5nLCBlOiBSZWFjdC5Nb3VzZUV2ZW50KSA9PiB7XG4gICAgICAgIHN0b3JlLmRpc3BhdGNoKGNyZWF0ZVRvZ2dsZUNvbXBsZXRlQWN0aW9uKGlkLCBzdG9yZSkpO1xuICAgIH1cblxuICAgIHByaXZhdGUgb25DbGlja0RlbGV0ZSA9IChpZDogc3RyaW5nLCBlOiBSZWFjdC5Nb3VzZUV2ZW50KSA9PiB7XG4gICAgICAgIHN0b3JlLmRpc3BhdGNoKGNyZWF0ZURlbGV0ZVRhc2tBY3Rpb24oaWQsIHN0b3JlKSk7XG4gICAgICAgIGUuc3RvcFByb3BhZ2F0aW9uKCk7XG4gICAgfVxufVxuXG5leHBvcnQgZGVmYXVsdCBUYXNrUm93O1xuIl19
 
 /***/ }),
 
@@ -62607,11 +65918,14 @@ a2RMapper.addWork(Action.DELETE_TASK, function (state, action) {
     }
     state.tasks = tasks.filter(function (it) { return it.id !== action.taskId; });
 });
+a2RMapper.addWork(Action.TOGGLE_SHOW_SPINNER, function (state, action) {
+    state.shownLoading = !state.shownLoading;
+});
 exports.TaskReducer = function (state, action) {
     if (state === void 0) { state = ITask_1.initTaskList; }
     return a2RMapper.execute(state, action);
 };
-//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiVGFza1JlZHVjZXIuanMiLCJzb3VyY2VSb290IjoiLi90c3gvIiwic291cmNlcyI6WyJyZWR1Y2Vycy9UYXNrUmVkdWNlci50cyJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiOzs7Ozs7Ozs7Ozs7QUFBQSxnREFBMEI7QUFHMUIsNkRBQWlEO0FBQ2pELHlDQUFvRTtBQUNwRSx5RkFBNkQ7QUFFN0QsSUFBTSxTQUFTLEdBQUcsK0JBQWUsRUFBYSxDQUFDO0FBRS9DLFNBQVMsQ0FBQyxPQUFPLENBQ2IsTUFBTSxDQUFDLFVBQVUsRUFDakIsVUFBQyxLQUFLLEVBQUUsTUFBTTtJQUNWLEtBQUssQ0FBQyxLQUFLLEdBQUcsZUFBSyxDQUFDLE1BQU0sQ0FBQyxLQUFLLENBQUMsQ0FBQztBQUN0QyxDQUFDLENBQ0osQ0FBQztBQUVGLFNBQVMsQ0FBQyxPQUFPLENBQ2IsTUFBTSxDQUFDLFFBQVEsRUFDZixVQUFDLEtBQUssRUFBRSxNQUFNO0lBQ1YsS0FBSyxDQUFDLEtBQUssQ0FBQyxJQUFJLENBQUMsa0JBQVUsQ0FBQyxNQUFNLENBQUMsUUFBUSxFQUFFLE1BQU0sQ0FBQyxRQUFRLENBQUMsQ0FBQyxDQUFDO0FBQ25FLENBQUMsQ0FDSixDQUFDO0FBRUYsU0FBUyxDQUFDLE9BQU8sQ0FDYixNQUFNLENBQUMsb0JBQW9CLEVBQzNCLFVBQUMsS0FBSyxFQUFFLE1BQU07SUFDSCxJQUFBLG1CQUFLLENBQVU7SUFDdEIsSUFBTSxNQUFNLEdBQUcsS0FBSyxDQUFDLElBQUksQ0FBQyxVQUFDLEVBQUUsSUFBSyxPQUFBLEVBQUUsQ0FBQyxFQUFFLEtBQUssTUFBTSxDQUFDLE1BQU0sRUFBdkIsQ0FBdUIsQ0FBQyxDQUFDO0lBQzNELElBQUksQ0FBQyxNQUFNLEVBQUU7UUFBRSxPQUFPO0tBQUU7SUFDeEIsTUFBTSxDQUFDLFFBQVEsR0FBRyxDQUFDLE1BQU0sQ0FBQyxRQUFRLENBQUM7QUFDdkMsQ0FBQyxDQUNKLENBQUM7QUFFRixTQUFTLENBQUMsT0FBTyxDQUNiLE1BQU0sQ0FBQyxXQUFXLEVBQ2xCLFVBQUMsS0FBSyxFQUFFLE1BQU07SUFDSCxJQUFBLG1CQUFLLENBQVU7SUFDdEIsSUFBTSxNQUFNLEdBQUcsS0FBSyxDQUFDLElBQUksQ0FBQyxVQUFDLEVBQUUsSUFBSyxPQUFBLEVBQUUsQ0FBQyxFQUFFLEtBQUssTUFBTSxDQUFDLE1BQU0sRUFBdkIsQ0FBdUIsQ0FBQyxDQUFDO0lBQzNELElBQUksQ0FBQyxNQUFNLEVBQUU7UUFBRSxPQUFPO0tBQUU7SUFDeEIsS0FBSyxDQUFDLEtBQUssR0FBRyxLQUFLLENBQUMsTUFBTSxDQUFDLFVBQUMsRUFBRSxJQUFLLE9BQUEsRUFBRSxDQUFDLEVBQUUsS0FBSyxNQUFNLENBQUMsTUFBTSxFQUF2QixDQUF1QixDQUFDLENBQUM7QUFDaEUsQ0FBQyxDQUNKLENBQUM7QUFFVyxRQUFBLFdBQVcsR0FBNkIsVUFBQyxLQUFvQixFQUFFLE1BQU07SUFBNUIsc0JBQUEsRUFBQSxRQUFRLG9CQUFZO0lBQ3RFLE9BQU8sU0FBUyxDQUFDLE9BQU8sQ0FBQyxLQUFLLEVBQUUsTUFBTSxDQUFDLENBQUM7QUFDNUMsQ0FBQyxDQUFDIiwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IENsb25lIGZyb20gJ2Nsb25lJztcbmltcG9ydCBSZWR1eCBmcm9tICdyZWR1eCc7XG5cbmltcG9ydCAqIGFzIEFjdGlvbiBmcm9tICcuLi9hY3Rpb25zL1Rhc2tBY3Rpb25zJztcbmltcG9ydCB7Y3JlYXRlVGFzaywgaW5pdFRhc2tMaXN0LCBJVGFza0xpc3R9IGZyb20gJy4uL3N0YXRlcy9JVGFzayc7XG5pbXBvcnQgY3JlYXRlQTJSTWFwcGVyIGZyb20gJy4uL3V0aWxzL0FjdGlvblRvUmVkdWNlck1hcHBlcic7XG5cbmNvbnN0IGEyUk1hcHBlciA9IGNyZWF0ZUEyUk1hcHBlcjxJVGFza0xpc3Q+KCk7XG5cbmEyUk1hcHBlci5hZGRXb3JrPEFjdGlvbi5JU2hvd1Rhc2tBY3Rpb24+KFxuICAgIEFjdGlvbi5TSE9XX1RBU0tTLFxuICAgIChzdGF0ZSwgYWN0aW9uKSA9PiB7XG4gICAgICAgIHN0YXRlLnRhc2tzID0gQ2xvbmUoYWN0aW9uLnRhc2tzKTtcbiAgICB9LFxuKTtcblxuYTJSTWFwcGVyLmFkZFdvcms8QWN0aW9uLklBZGRUYXNrQWN0aW9uPihcbiAgICBBY3Rpb24uQUREX1RBU0ssXG4gICAgKHN0YXRlLCBhY3Rpb24pID0+IHtcbiAgICAgICAgc3RhdGUudGFza3MucHVzaChjcmVhdGVUYXNrKGFjdGlvbi50YXNrTmFtZSwgYWN0aW9uLmRlYWRsaW5lKSk7XG4gICAgfSxcbik7XG5cbmEyUk1hcHBlci5hZGRXb3JrPEFjdGlvbi5JVG9nZ2xlQ29tcGxldGVBY3Rpb24+KFxuICAgIEFjdGlvbi5UT0dHTEVfQ09NUExFVEVfVEFTSyxcbiAgICAoc3RhdGUsIGFjdGlvbikgPT4ge1xuICAgICAgICBjb25zdCB7dGFza3N9ID0gc3RhdGU7XG4gICAgICAgIGNvbnN0IHRhcmdldCA9IHRhc2tzLmZpbmQoKGl0KSA9PiBpdC5pZCA9PT0gYWN0aW9uLnRhc2tJZCk7XG4gICAgICAgIGlmICghdGFyZ2V0KSB7IHJldHVybjsgfVxuICAgICAgICB0YXJnZXQuY29tcGxldGUgPSAhdGFyZ2V0LmNvbXBsZXRlO1xuICAgIH0sXG4pO1xuXG5hMlJNYXBwZXIuYWRkV29yazxBY3Rpb24uSURlbGV0ZUFjdGlvbj4oXG4gICAgQWN0aW9uLkRFTEVURV9UQVNLLFxuICAgIChzdGF0ZSwgYWN0aW9uKSA9PiB7XG4gICAgICAgIGNvbnN0IHt0YXNrc30gPSBzdGF0ZTtcbiAgICAgICAgY29uc3QgdGFyZ2V0ID0gdGFza3MuZmluZCgoaXQpID0+IGl0LmlkID09PSBhY3Rpb24udGFza0lkKTtcbiAgICAgICAgaWYgKCF0YXJnZXQpIHsgcmV0dXJuOyB9XG4gICAgICAgIHN0YXRlLnRhc2tzID0gdGFza3MuZmlsdGVyKChpdCkgPT4gaXQuaWQgIT09IGFjdGlvbi50YXNrSWQpO1xuICAgIH0sXG4pO1xuXG5leHBvcnQgY29uc3QgVGFza1JlZHVjZXI6IFJlZHV4LlJlZHVjZXI8SVRhc2tMaXN0PiA9IChzdGF0ZSA9IGluaXRUYXNrTGlzdCwgYWN0aW9uKSA9PiB7XG4gICAgcmV0dXJuIGEyUk1hcHBlci5leGVjdXRlKHN0YXRlLCBhY3Rpb24pO1xufTtcbiJdfQ==
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiVGFza1JlZHVjZXIuanMiLCJzb3VyY2VSb290IjoiLi90c3gvIiwic291cmNlcyI6WyJyZWR1Y2Vycy9UYXNrUmVkdWNlci50cyJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiOzs7Ozs7Ozs7Ozs7QUFBQSxnREFBMEI7QUFHMUIsNkRBQWlEO0FBQ2pELHlDQUFvRTtBQUNwRSx5RkFBNkQ7QUFFN0QsSUFBTSxTQUFTLEdBQUcsK0JBQWUsRUFBYSxDQUFDO0FBRS9DLFNBQVMsQ0FBQyxPQUFPLENBQ2IsTUFBTSxDQUFDLFVBQVUsRUFDakIsVUFBQyxLQUFLLEVBQUUsTUFBTTtJQUNWLEtBQUssQ0FBQyxLQUFLLEdBQUcsZUFBSyxDQUFDLE1BQU0sQ0FBQyxLQUFLLENBQUMsQ0FBQztBQUN0QyxDQUFDLENBQ0osQ0FBQztBQUVGLFNBQVMsQ0FBQyxPQUFPLENBQ2IsTUFBTSxDQUFDLFFBQVEsRUFDZixVQUFDLEtBQUssRUFBRSxNQUFNO0lBQ1YsS0FBSyxDQUFDLEtBQUssQ0FBQyxJQUFJLENBQUMsa0JBQVUsQ0FBQyxNQUFNLENBQUMsUUFBUSxFQUFFLE1BQU0sQ0FBQyxRQUFRLENBQUMsQ0FBQyxDQUFDO0FBQ25FLENBQUMsQ0FDSixDQUFDO0FBRUYsU0FBUyxDQUFDLE9BQU8sQ0FDYixNQUFNLENBQUMsb0JBQW9CLEVBQzNCLFVBQUMsS0FBSyxFQUFFLE1BQU07SUFDSCxJQUFBLG1CQUFLLENBQVU7SUFDdEIsSUFBTSxNQUFNLEdBQUcsS0FBSyxDQUFDLElBQUksQ0FBQyxVQUFDLEVBQUUsSUFBSyxPQUFBLEVBQUUsQ0FBQyxFQUFFLEtBQUssTUFBTSxDQUFDLE1BQU0sRUFBdkIsQ0FBdUIsQ0FBQyxDQUFDO0lBQzNELElBQUksQ0FBQyxNQUFNLEVBQUU7UUFBRSxPQUFPO0tBQUU7SUFDeEIsTUFBTSxDQUFDLFFBQVEsR0FBRyxDQUFDLE1BQU0sQ0FBQyxRQUFRLENBQUM7QUFDdkMsQ0FBQyxDQUNKLENBQUM7QUFFRixTQUFTLENBQUMsT0FBTyxDQUNiLE1BQU0sQ0FBQyxXQUFXLEVBQ2xCLFVBQUMsS0FBSyxFQUFFLE1BQU07SUFDSCxJQUFBLG1CQUFLLENBQVU7SUFDdEIsSUFBTSxNQUFNLEdBQUcsS0FBSyxDQUFDLElBQUksQ0FBQyxVQUFDLEVBQUUsSUFBSyxPQUFBLEVBQUUsQ0FBQyxFQUFFLEtBQUssTUFBTSxDQUFDLE1BQU0sRUFBdkIsQ0FBdUIsQ0FBQyxDQUFDO0lBQzNELElBQUksQ0FBQyxNQUFNLEVBQUU7UUFBRSxPQUFPO0tBQUU7SUFDeEIsS0FBSyxDQUFDLEtBQUssR0FBRyxLQUFLLENBQUMsTUFBTSxDQUFDLFVBQUMsRUFBRSxJQUFLLE9BQUEsRUFBRSxDQUFDLEVBQUUsS0FBSyxNQUFNLENBQUMsTUFBTSxFQUF2QixDQUF1QixDQUFDLENBQUM7QUFDaEUsQ0FBQyxDQUNKLENBQUM7QUFFRixTQUFTLENBQUMsT0FBTyxDQUNiLE1BQU0sQ0FBQyxtQkFBbUIsRUFDMUIsVUFBQyxLQUFLLEVBQUUsTUFBTTtJQUNWLEtBQUssQ0FBQyxZQUFZLEdBQUcsQ0FBQyxLQUFLLENBQUMsWUFBWSxDQUFDO0FBQzdDLENBQUMsQ0FDSixDQUFDO0FBRVcsUUFBQSxXQUFXLEdBQTZCLFVBQUMsS0FBb0IsRUFBRSxNQUFNO0lBQTVCLHNCQUFBLEVBQUEsUUFBUSxvQkFBWTtJQUN0RSxPQUFPLFNBQVMsQ0FBQyxPQUFPLENBQUMsS0FBSyxFQUFFLE1BQU0sQ0FBQyxDQUFDO0FBQzVDLENBQUMsQ0FBQyIsInNvdXJjZXNDb250ZW50IjpbImltcG9ydCBDbG9uZSBmcm9tICdjbG9uZSc7XG5pbXBvcnQgUmVkdXggZnJvbSAncmVkdXgnO1xuXG5pbXBvcnQgKiBhcyBBY3Rpb24gZnJvbSAnLi4vYWN0aW9ucy9UYXNrQWN0aW9ucyc7XG5pbXBvcnQge2NyZWF0ZVRhc2ssIGluaXRUYXNrTGlzdCwgSVRhc2tMaXN0fSBmcm9tICcuLi9zdGF0ZXMvSVRhc2snO1xuaW1wb3J0IGNyZWF0ZUEyUk1hcHBlciBmcm9tICcuLi91dGlscy9BY3Rpb25Ub1JlZHVjZXJNYXBwZXInO1xuXG5jb25zdCBhMlJNYXBwZXIgPSBjcmVhdGVBMlJNYXBwZXI8SVRhc2tMaXN0PigpO1xuXG5hMlJNYXBwZXIuYWRkV29yazxBY3Rpb24uSVNob3dUYXNrQWN0aW9uPihcbiAgICBBY3Rpb24uU0hPV19UQVNLUyxcbiAgICAoc3RhdGUsIGFjdGlvbikgPT4ge1xuICAgICAgICBzdGF0ZS50YXNrcyA9IENsb25lKGFjdGlvbi50YXNrcyk7XG4gICAgfSxcbik7XG5cbmEyUk1hcHBlci5hZGRXb3JrPEFjdGlvbi5JQWRkVGFza0FjdGlvbj4oXG4gICAgQWN0aW9uLkFERF9UQVNLLFxuICAgIChzdGF0ZSwgYWN0aW9uKSA9PiB7XG4gICAgICAgIHN0YXRlLnRhc2tzLnB1c2goY3JlYXRlVGFzayhhY3Rpb24udGFza05hbWUsIGFjdGlvbi5kZWFkbGluZSkpO1xuICAgIH0sXG4pO1xuXG5hMlJNYXBwZXIuYWRkV29yazxBY3Rpb24uSVRvZ2dsZUNvbXBsZXRlQWN0aW9uPihcbiAgICBBY3Rpb24uVE9HR0xFX0NPTVBMRVRFX1RBU0ssXG4gICAgKHN0YXRlLCBhY3Rpb24pID0+IHtcbiAgICAgICAgY29uc3Qge3Rhc2tzfSA9IHN0YXRlO1xuICAgICAgICBjb25zdCB0YXJnZXQgPSB0YXNrcy5maW5kKChpdCkgPT4gaXQuaWQgPT09IGFjdGlvbi50YXNrSWQpO1xuICAgICAgICBpZiAoIXRhcmdldCkgeyByZXR1cm47IH1cbiAgICAgICAgdGFyZ2V0LmNvbXBsZXRlID0gIXRhcmdldC5jb21wbGV0ZTtcbiAgICB9LFxuKTtcblxuYTJSTWFwcGVyLmFkZFdvcms8QWN0aW9uLklEZWxldGVBY3Rpb24+KFxuICAgIEFjdGlvbi5ERUxFVEVfVEFTSyxcbiAgICAoc3RhdGUsIGFjdGlvbikgPT4ge1xuICAgICAgICBjb25zdCB7dGFza3N9ID0gc3RhdGU7XG4gICAgICAgIGNvbnN0IHRhcmdldCA9IHRhc2tzLmZpbmQoKGl0KSA9PiBpdC5pZCA9PT0gYWN0aW9uLnRhc2tJZCk7XG4gICAgICAgIGlmICghdGFyZ2V0KSB7IHJldHVybjsgfVxuICAgICAgICBzdGF0ZS50YXNrcyA9IHRhc2tzLmZpbHRlcigoaXQpID0+IGl0LmlkICE9PSBhY3Rpb24udGFza0lkKTtcbiAgICB9LFxuKTtcblxuYTJSTWFwcGVyLmFkZFdvcms8QWN0aW9uLklUb2dnbGVTaG93U3Bpbm5lckFjdGlvbj4oXG4gICAgQWN0aW9uLlRPR0dMRV9TSE9XX1NQSU5ORVIsXG4gICAgKHN0YXRlLCBhY3Rpb24pID0+IHtcbiAgICAgICAgc3RhdGUuc2hvd25Mb2FkaW5nID0gIXN0YXRlLnNob3duTG9hZGluZztcbiAgICB9LFxuKTtcblxuZXhwb3J0IGNvbnN0IFRhc2tSZWR1Y2VyOiBSZWR1eC5SZWR1Y2VyPElUYXNrTGlzdD4gPSAoc3RhdGUgPSBpbml0VGFza0xpc3QsIGFjdGlvbikgPT4ge1xuICAgIHJldHVybiBhMlJNYXBwZXIuZXhlY3V0ZShzdGF0ZSwgYWN0aW9uKTtcbn07XG4iXX0=
 
 /***/ }),
 
@@ -62627,6 +65941,7 @@ exports.TaskReducer = function (state, action) {
 Object.defineProperty(exports, "__esModule", { value: true });
 var uuid_1 = __webpack_require__(/*! uuid */ "./node_modules/uuid/index.js");
 exports.initTaskList = {
+    shownLoading: false,
     tasks: [],
 };
 exports.createTask = function (taskName, deadline) {
@@ -62637,7 +65952,7 @@ exports.createTask = function (taskName, deadline) {
         taskName: taskName,
     };
 };
-//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiSVRhc2suanMiLCJzb3VyY2VSb290IjoiLi90c3gvIiwic291cmNlcyI6WyJzdGF0ZXMvSVRhc2sudHMiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6Ijs7QUFBQSw2QkFBZ0M7QUFhbkIsUUFBQSxZQUFZLEdBQWM7SUFDbkMsS0FBSyxFQUFFLEVBQUU7Q0FDWixDQUFDO0FBRVcsUUFBQSxVQUFVLEdBQUcsVUFBQyxRQUFnQixFQUFFLFFBQWM7SUFDdkQsT0FBTztRQUNILFFBQVEsRUFBRSxLQUFLO1FBQ2YsUUFBUSxVQUFBO1FBQ1IsRUFBRSxFQUFFLFNBQUksRUFBRTtRQUNWLFFBQVEsVUFBQTtLQUNYLENBQUM7QUFDTixDQUFDLENBQUMiLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQge3Y0IGFzIFVVSUR9IGZyb20gJ3V1aWQnO1xuXG5leHBvcnQgaW50ZXJmYWNlIElUYXNrIHtcbiAgICBjb21wbGV0ZTogYm9vbGVhbjtcbiAgICBkZWFkbGluZTogRGF0ZTtcbiAgICBpZDogc3RyaW5nO1xuICAgIHRhc2tOYW1lOiBzdHJpbmc7XG59XG5cbmV4cG9ydCBpbnRlcmZhY2UgSVRhc2tMaXN0IHtcbiAgICB0YXNrczogSVRhc2tbXTtcbn1cblxuZXhwb3J0IGNvbnN0IGluaXRUYXNrTGlzdDogSVRhc2tMaXN0ID0ge1xuICAgIHRhc2tzOiBbXSxcbn07XG5cbmV4cG9ydCBjb25zdCBjcmVhdGVUYXNrID0gKHRhc2tOYW1lOiBzdHJpbmcsIGRlYWRsaW5lOiBEYXRlKTogSVRhc2sgPT4ge1xuICAgIHJldHVybiB7XG4gICAgICAgIGNvbXBsZXRlOiBmYWxzZSxcbiAgICAgICAgZGVhZGxpbmUsXG4gICAgICAgIGlkOiBVVUlEKCksXG4gICAgICAgIHRhc2tOYW1lLFxuICAgIH07XG59O1xuIl19
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiSVRhc2suanMiLCJzb3VyY2VSb290IjoiLi90c3gvIiwic291cmNlcyI6WyJzdGF0ZXMvSVRhc2sudHMiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6Ijs7QUFBQSw2QkFBZ0M7QUFjbkIsUUFBQSxZQUFZLEdBQWM7SUFDbkMsWUFBWSxFQUFFLEtBQUs7SUFDbkIsS0FBSyxFQUFFLEVBQUU7Q0FDWixDQUFDO0FBRVcsUUFBQSxVQUFVLEdBQUcsVUFBQyxRQUFnQixFQUFFLFFBQWM7SUFDdkQsT0FBTztRQUNILFFBQVEsRUFBRSxLQUFLO1FBQ2YsUUFBUSxVQUFBO1FBQ1IsRUFBRSxFQUFFLFNBQUksRUFBRTtRQUNWLFFBQVEsVUFBQTtLQUNYLENBQUM7QUFDTixDQUFDLENBQUMiLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQge3Y0IGFzIFVVSUR9IGZyb20gJ3V1aWQnO1xuXG5leHBvcnQgaW50ZXJmYWNlIElUYXNrIHtcbiAgICBjb21wbGV0ZTogYm9vbGVhbjtcbiAgICBkZWFkbGluZTogRGF0ZTtcbiAgICBpZDogc3RyaW5nO1xuICAgIHRhc2tOYW1lOiBzdHJpbmc7XG59XG5cbmV4cG9ydCBpbnRlcmZhY2UgSVRhc2tMaXN0IHtcbiAgICBzaG93bkxvYWRpbmc6IGJvb2xlYW47XG4gICAgdGFza3M6IElUYXNrW107XG59XG5cbmV4cG9ydCBjb25zdCBpbml0VGFza0xpc3Q6IElUYXNrTGlzdCA9IHtcbiAgICBzaG93bkxvYWRpbmc6IGZhbHNlLFxuICAgIHRhc2tzOiBbXSxcbn07XG5cbmV4cG9ydCBjb25zdCBjcmVhdGVUYXNrID0gKHRhc2tOYW1lOiBzdHJpbmcsIGRlYWRsaW5lOiBEYXRlKTogSVRhc2sgPT4ge1xuICAgIHJldHVybiB7XG4gICAgICAgIGNvbXBsZXRlOiBmYWxzZSxcbiAgICAgICAgZGVhZGxpbmUsXG4gICAgICAgIGlkOiBVVUlEKCksXG4gICAgICAgIHRhc2tOYW1lLFxuICAgIH07XG59O1xuIl19
 
 /***/ }),
 
@@ -62682,6 +65997,141 @@ exports.default = createActionToReducerMapper;
 
 /***/ }),
 
+/***/ "./ts/utils/TaskFileIF.ts":
+/*!********************************!*\
+  !*** ./ts/utils/TaskFileIF.ts ***!
+  \********************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : new P(function (resolve) { resolve(result.value); }).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+var __generator = (this && this.__generator) || function (thisArg, body) {
+    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g;
+    return g = { next: verb(0), "throw": verb(1), "return": verb(2) }, typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
+    function verb(n) { return function (v) { return step([n, v]); }; }
+    function step(op) {
+        if (f) throw new TypeError("Generator is already executing.");
+        while (_) try {
+            if (f = 1, y && (t = op[0] & 2 ? y["return"] : op[0] ? y["throw"] || ((t = y["return"]) && t.call(y), 0) : y.next) && !(t = t.call(y, op[1])).done) return t;
+            if (y = 0, t) op = [op[0] & 2, t.value];
+            switch (op[0]) {
+                case 0: case 1: t = op; break;
+                case 4: _.label++; return { value: op[1], done: false };
+                case 5: _.label++; y = op[1]; op = [0]; continue;
+                case 7: op = _.ops.pop(); _.trys.pop(); continue;
+                default:
+                    if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
+                    if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }
+                    if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }
+                    if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }
+                    if (t[2]) _.ops.pop();
+                    _.trys.pop(); continue;
+            }
+            op = body.call(thisArg, _);
+        } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }
+        if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
+    }
+};
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+var _this = this;
+Object.defineProperty(exports, "__esModule", { value: true });
+var fs_extra_1 = __importDefault(__webpack_require__(/*! fs-extra */ "./node_modules/fs-extra/lib/index.js"));
+var os_1 = __importDefault(__webpack_require__(/*! os */ "os"));
+var path_1 = __importDefault(__webpack_require__(/*! path */ "path"));
+var dataFilePath = path_1.default.join(os_1.default.homedir(), 'todo.json');
+exports.loadTask = function () { return __awaiter(_this, void 0, void 0, function () {
+    var exist, jsonData;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0: return [4 /*yield*/, fs_extra_1.default.pathExists(dataFilePath)];
+            case 1:
+                exist = _a.sent();
+                if (!exist) {
+                    fs_extra_1.default.ensureFileSync(dataFilePath);
+                    return [2 /*return*/, fs_extra_1.default.writeJSON(dataFilePath, { data: [] })];
+                }
+                return [4 /*yield*/, fs_extra_1.default.readJSON(dataFilePath, {
+                        reviver: function (key, value) {
+                            if (key === 'deadline') {
+                                return new Date(value);
+                            }
+                            else {
+                                return value;
+                            }
+                        },
+                    })];
+            case 2:
+                jsonData = _a.sent();
+                return [4 /*yield*/, setTimeoutPromise(100)];
+            case 3:
+                _a.sent();
+                return [2 /*return*/, jsonData];
+        }
+    });
+}); };
+exports.saveState = function (taskList) { return __awaiter(_this, void 0, void 0, function () {
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0: return [4 /*yield*/, setTimeoutPromise(100)];
+            case 1:
+                _a.sent();
+                return [4 /*yield*/, fs_extra_1.default.writeJSON(dataFilePath, { data: taskList }, {
+                        replacer: function (key, value) {
+                            if (key !== 'deadline') {
+                                return value;
+                            }
+                            return new Date(value).getTime();
+                        },
+                        spaces: 2,
+                    })];
+            case 2:
+                _a.sent();
+                return [2 /*return*/];
+        }
+    });
+}); };
+var setTimeoutPromise = function (count) {
+    return new Promise(function (resolve) {
+        setTimeout(function () { resolve(); }, count);
+    });
+};
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiVGFza0ZpbGVJRi5qcyIsInNvdXJjZVJvb3QiOiIuL3RzeC8iLCJzb3VyY2VzIjpbInV0aWxzL1Rhc2tGaWxlSUYudHMiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6Ijs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7O0FBQUEsaUJBMkNBOztBQTNDQSxzREFBNEI7QUFDNUIsMENBQW9CO0FBQ3BCLDhDQUF3QjtBQUl4QixJQUFNLFlBQVksR0FBRyxjQUFJLENBQUMsSUFBSSxDQUFDLFlBQUUsQ0FBQyxPQUFPLEVBQUUsRUFBRSxXQUFXLENBQUMsQ0FBQztBQUU3QyxRQUFBLFFBQVEsR0FBRzs7OztvQkFDTixxQkFBTSxrQkFBSSxDQUFDLFVBQVUsQ0FBQyxZQUFZLENBQUMsRUFBQTs7Z0JBQTNDLEtBQUssR0FBRyxTQUFtQztnQkFDakQsSUFBSSxDQUFDLEtBQUssRUFBRTtvQkFDUixrQkFBSSxDQUFDLGNBQWMsQ0FBQyxZQUFZLENBQUMsQ0FBQztvQkFDbEMsc0JBQU8sa0JBQUksQ0FBQyxTQUFTLENBQUMsWUFBWSxFQUFFLEVBQUMsSUFBSSxFQUFFLEVBQUUsRUFBQyxDQUFDLEVBQUM7aUJBQ25EO2dCQUNnQixxQkFBTSxrQkFBSSxDQUFDLFFBQVEsQ0FBQyxZQUFZLEVBQUU7d0JBQy9DLE9BQU8sRUFBRSxVQUFDLEdBQVcsRUFBRSxLQUFVOzRCQUM3QixJQUFJLEdBQUcsS0FBSyxVQUFVLEVBQUU7Z0NBQ3BCLE9BQU8sSUFBSSxJQUFJLENBQUMsS0FBZSxDQUFDLENBQUM7NkJBQ3BDO2lDQUFNO2dDQUNILE9BQU8sS0FBSyxDQUFDOzZCQUNoQjt3QkFDTCxDQUFDO3FCQUNKLENBQUMsRUFBQTs7Z0JBUkksUUFBUSxHQUFHLFNBUWY7Z0JBQ0YscUJBQU0saUJBQWlCLENBQUMsR0FBRyxDQUFDLEVBQUE7O2dCQUE1QixTQUE0QixDQUFDO2dCQUM3QixzQkFBTyxRQUFRLEVBQUM7OztLQUNuQixDQUFDO0FBRVcsUUFBQSxTQUFTLEdBQUcsVUFBTyxRQUFpQjs7O29CQUM3QyxxQkFBTSxpQkFBaUIsQ0FBQyxHQUFHLENBQUMsRUFBQTs7Z0JBQTVCLFNBQTRCLENBQUM7Z0JBQzdCLHFCQUFNLGtCQUFJLENBQUMsU0FBUyxDQUFDLFlBQVksRUFBRSxFQUFFLElBQUksRUFBRSxRQUFRLEVBQUUsRUFBRTt3QkFDbkQsUUFBUSxFQUFFLFVBQUMsR0FBVyxFQUFFLEtBQVU7NEJBQzlCLElBQUksR0FBRyxLQUFLLFVBQVUsRUFBRTtnQ0FBRSxPQUFPLEtBQUssQ0FBQzs2QkFBRTs0QkFDekMsT0FBTyxJQUFJLElBQUksQ0FBRSxLQUFnQixDQUFDLENBQUMsT0FBTyxFQUFFLENBQUM7d0JBQ2pELENBQUM7d0JBQ0QsTUFBTSxFQUFFLENBQUM7cUJBQ1osQ0FBQyxFQUFBOztnQkFORixTQU1FLENBQUM7Ozs7S0FDTixDQUFDO0FBRUYsSUFBTSxpQkFBaUIsR0FBRyxVQUFDLEtBQWE7SUFDcEMsT0FBTyxJQUFJLE9BQU8sQ0FBQyxVQUFDLE9BQU87UUFDdkIsVUFBVSxDQUFDLGNBQVEsT0FBTyxFQUFFLENBQUMsQ0FBQyxDQUFDLEVBQUUsS0FBSyxDQUFDLENBQUM7SUFDNUMsQ0FBQyxDQUFDLENBQUM7QUFDUCxDQUFDLENBQUMiLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgRnNFeCBmcm9tICdmcy1leHRyYSc7XG5pbXBvcnQgT1MgZnJvbSAnb3MnO1xuaW1wb3J0IFBhdGggZnJvbSAncGF0aCc7XG5cbmltcG9ydCB7IElUYXNrIH0gZnJvbSAnLi4vc3RhdGVzL0lUYXNrJztcblxuY29uc3QgZGF0YUZpbGVQYXRoID0gUGF0aC5qb2luKE9TLmhvbWVkaXIoKSwgJ3RvZG8uanNvbicpO1xuXG5leHBvcnQgY29uc3QgbG9hZFRhc2sgPSBhc3luYyAoKSA9PiB7XG4gICAgY29uc3QgZXhpc3QgPSBhd2FpdCBGc0V4LnBhdGhFeGlzdHMoZGF0YUZpbGVQYXRoKTtcbiAgICBpZiAoIWV4aXN0KSB7XG4gICAgICAgIEZzRXguZW5zdXJlRmlsZVN5bmMoZGF0YUZpbGVQYXRoKTtcbiAgICAgICAgcmV0dXJuIEZzRXgud3JpdGVKU09OKGRhdGFGaWxlUGF0aCwge2RhdGE6IFtdfSk7XG4gICAgfVxuICAgIGNvbnN0IGpzb25EYXRhID0gYXdhaXQgRnNFeC5yZWFkSlNPTihkYXRhRmlsZVBhdGgsIHtcbiAgICAgICAgcmV2aXZlcjogKGtleTogc3RyaW5nLCB2YWx1ZTogYW55KSA9PiB7XG4gICAgICAgICAgICBpZiAoa2V5ID09PSAnZGVhZGxpbmUnKSB7XG4gICAgICAgICAgICAgICAgcmV0dXJuIG5ldyBEYXRlKHZhbHVlIGFzIG51bWJlcik7XG4gICAgICAgICAgICB9IGVsc2Uge1xuICAgICAgICAgICAgICAgIHJldHVybiB2YWx1ZTtcbiAgICAgICAgICAgIH1cbiAgICAgICAgfSxcbiAgICB9KTtcbiAgICBhd2FpdCBzZXRUaW1lb3V0UHJvbWlzZSgxMDApO1xuICAgIHJldHVybiBqc29uRGF0YTtcbn07XG5cbmV4cG9ydCBjb25zdCBzYXZlU3RhdGUgPSBhc3luYyAodGFza0xpc3Q6IElUYXNrW10pID0+IHtcbiAgICBhd2FpdCBzZXRUaW1lb3V0UHJvbWlzZSgxMDApO1xuICAgIGF3YWl0IEZzRXgud3JpdGVKU09OKGRhdGFGaWxlUGF0aCwgeyBkYXRhOiB0YXNrTGlzdCB9LCB7XG4gICAgICAgIHJlcGxhY2VyOiAoa2V5OiBzdHJpbmcsIHZhbHVlOiBhbnkpID0+IHtcbiAgICAgICAgICAgIGlmIChrZXkgIT09ICdkZWFkbGluZScpIHsgcmV0dXJuIHZhbHVlOyB9XG4gICAgICAgICAgICByZXR1cm4gbmV3IERhdGUoKHZhbHVlIGFzIHN0cmluZykpLmdldFRpbWUoKTtcbiAgICAgICAgfSxcbiAgICAgICAgc3BhY2VzOiAyLFxuICAgIH0pO1xufTtcblxuY29uc3Qgc2V0VGltZW91dFByb21pc2UgPSAoY291bnQ6IG51bWJlcikgPT4ge1xuICAgIHJldHVybiBuZXcgUHJvbWlzZSgocmVzb2x2ZSkgPT4ge1xuICAgICAgICBzZXRUaW1lb3V0KCgpID0+IHsgcmVzb2x2ZSgpOyB9LCBjb3VudCk7XG4gICAgfSk7XG59O1xuIl19
+
+/***/ }),
+
+/***/ "assert":
+/*!*************************!*\
+  !*** external "assert" ***!
+  \*************************/
+/*! no static exports found */
+/***/ (function(module, exports) {
+
+module.exports = require("assert");
+
+/***/ }),
+
+/***/ "constants":
+/*!****************************!*\
+  !*** external "constants" ***!
+  \****************************/
+/*! no static exports found */
+/***/ (function(module, exports) {
+
+module.exports = require("constants");
+
+/***/ }),
+
 /***/ "crypto":
 /*!*************************!*\
   !*** external "crypto" ***!
@@ -62693,6 +66143,39 @@ module.exports = require("crypto");
 
 /***/ }),
 
+/***/ "fs":
+/*!*********************!*\
+  !*** external "fs" ***!
+  \*********************/
+/*! no static exports found */
+/***/ (function(module, exports) {
+
+module.exports = require("fs");
+
+/***/ }),
+
+/***/ "os":
+/*!*********************!*\
+  !*** external "os" ***!
+  \*********************/
+/*! no static exports found */
+/***/ (function(module, exports) {
+
+module.exports = require("os");
+
+/***/ }),
+
+/***/ "path":
+/*!***********************!*\
+  !*** external "path" ***!
+  \***********************/
+/*! no static exports found */
+/***/ (function(module, exports) {
+
+module.exports = require("path");
+
+/***/ }),
+
 /***/ "stream":
 /*!*************************!*\
   !*** external "stream" ***!
@@ -62701,6 +66184,17 @@ module.exports = require("crypto");
 /***/ (function(module, exports) {
 
 module.exports = require("stream");
+
+/***/ }),
+
+/***/ "util":
+/*!***********************!*\
+  !*** external "util" ***!
+  \***********************/
+/*! no static exports found */
+/***/ (function(module, exports) {
+
+module.exports = require("util");
 
 /***/ })
 

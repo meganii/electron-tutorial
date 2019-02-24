@@ -26,3 +26,9 @@ export const DELETE_TASK = UUID();
 export interface IDeleteAction extends Action {
     taskId: string;
 }
+
+export const TOGGLE_SHOW_SPINNER = UUID();
+
+// tslint:disable-next-line:no-empty-interface
+export interface IToggleShowSpinnerAction extends Action {
+}

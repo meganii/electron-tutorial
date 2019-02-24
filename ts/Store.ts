@@ -1,11 +1,6 @@
 import {combineReducers, createStore} from 'redux';
-
+import {IState} from './IStore';
 import {TaskReducer} from './reducers/TaskReducer';
-import {ITaskList} from './states/ITask';
-
-export interface IState {
-    taskList: ITaskList;
-}
 
 const combineReducer = combineReducers<IState>({
     taskList: TaskReducer,
